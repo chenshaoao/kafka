@@ -128,6 +128,7 @@ import java.util.concurrent.atomic.AtomicReference;
  */
 public class KafkaProducer<K, V> implements Producer<K, V> {
 
+    // test
     private static final Logger log = LoggerFactory.getLogger(KafkaProducer.class);
     private static final AtomicInteger PRODUCER_CLIENT_ID_SEQUENCE = new AtomicInteger(1);
     private static final String JMX_PREFIX = "kafka.producer";
