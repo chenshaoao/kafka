@@ -149,6 +149,7 @@ public final class Metadata {
         }
         long begin = System.currentTimeMillis();
         long remainingWaitMs = maxWaitMs;
+        // 判断版本，如果版本不对，继续等待（不用if，用while，唤醒后条件不一定满足）
         while (this.version <= lastVersion) {
             if (remainingWaitMs != 0)
                 wait(remainingWaitMs);

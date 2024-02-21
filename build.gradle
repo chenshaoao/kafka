@@ -17,6 +17,7 @@ import org.ajoberstar.grgit.Grgit
 
 buildscript {
   repositories {
+    maven { url 'https://maven.aliyun.com/repository/public' }
     mavenCentral()
     jcenter()
   }
@@ -36,6 +37,7 @@ allprojects {
   apply plugin: "jacoco"
 
   repositories {
+    maven { url 'https://maven.aliyun.com/repository/public' }
     mavenCentral()
   }
 

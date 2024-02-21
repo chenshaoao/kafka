@@ -48,13 +48,6 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.atomic.AtomicInteger;
 
-/**
- * This class acts as a queue that accumulates records into {@link org.apache.kafka.common.record.MemoryRecords}
- * instances to be sent to the server.
- * <p>
- * The accumulator uses a bounded amount of memory and append calls will block when that memory is exhausted, unless
- * this behavior is explicitly disabled.
- */
 public final class RecordAccumulator {
 
     private static final Logger log = LoggerFactory.getLogger(RecordAccumulator.class);
@@ -74,20 +67,6 @@ public final class RecordAccumulator {
     private final Set<TopicPartition> muted;
     private int drainIndex;
 
-    /**
-     * Create a new record accumulator
-     * 
-     * @param batchSize The size to use when allocating {@link org.apache.kafka.common.record.MemoryRecords} instances
-     * @param totalSize The maximum memory the record accumulator can use.
-     * @param compression The compression codec for the records
-     * @param lingerMs An artificial delay time to add before declaring a records instance that isn't full ready for
-     *        sending. This allows time for more records to arrive. Setting a non-zero lingerMs will trade off some
-     *        latency for potentially better throughput due to more batching (and hence fewer, larger requests).
-     * @param retryBackoffMs An artificial delay time to retry the produce request upon receiving an error. This avoids
-     *        exhausting all retries in a short period of time.
-     * @param metrics The metrics
-     * @param time The time instance to use
-     */
     public RecordAccumulator(int batchSize,
                              long totalSize,
                              CompressionType compression,
@@ -142,60 +121,60 @@ public final class RecordAccumulator {
         bufferExhaustedRecordSensor.add(metricName, new Rate());
     }
 
-    /**
-     * Add a record to the accumulator, return the append result
-     * <p>
-     * The append result will contain the future metadata, and flag for whether the appended batch is full or a new batch is created
-     * <p>
-     *
-     * @param tp The topic/partition to which this record is being sent
-     * @param timestamp The timestamp of the record
-     * @param key The key for the record
-     * @param value The value for the record
-     * @param callback The user-supplied callback to execute when the request is complete
-     * @param maxTimeToBlock The maximum time in milliseconds to block for buffer memory to be available
-     */
     public RecordAppendResult append(TopicPartition tp,
                                      long timestamp,
                                      byte[] key,
                                      byte[] value,
                                      Callback callback,
                                      long maxTimeToBlock) throws InterruptedException {
-        // We keep track of the number of appending thread to make sure we do not miss batches in
-        // abortIncompleteBatches().
+        // We keep track of the number of appending thread to make sure we do not miss batches in abortIncompleteBatches().
+        /**
+         * @see RecordAccumulator#abortIncompleteBatches()
+         */
         appendsInProgress.incrementAndGet();
         try {
-            // check if we have an in-progress batch
             Deque<RecordBatch> dq = getOrCreateDeque(tp);
+            // 场景一：批次存在
             synchronized (dq) {
-                if (closed)
+                if (closed) // 判断是否关闭
                     throw new IllegalStateException("Cannot send after the producer is closed.");
+                /**
+                 * ⭐️⭐️⭐️ 多线程专题：异步转同步。FutureRecordMetadata -> RecordAppendResult
+                 * @see org.apache.kafka.clients.producer.internals.RecordBatch#tryAppend
+                 */
                 RecordAppendResult appendResult = tryAppend(timestamp, key, value, callback, dq);
                 if (appendResult != null)
                     return appendResult;
             }
 
-            // we don't have an in-progress record batch try to allocate a new batch
+            // 场景二：批次不存在
+            // 申请内存，用于创建批次
             int size = Math.max(this.batchSize, Records.LOG_OVERHEAD + Record.recordSize(key, value));
-            log.trace("Allocating a new {} byte message buffer for topic {} partition {}", size, tp.topic(), tp.partition());
-            ByteBuffer buffer = free.allocate(size, maxTimeToBlock);
+            // ⭐️⭐️⭐️ 多线程专题：内存池阻塞队列
+            ByteBuffer buffer = free.allocate(size, maxTimeToBlock); // 耗时不同步
+
             synchronized (dq) {
-                // Need to check if producer is closed again after grabbing the dequeue lock.
-                if (closed)
+                if (closed) // 判断是否关闭，再次获取锁后，所有条件都要再校验一下
                     throw new IllegalStateException("Cannot send after the producer is closed.");
 
+                // 当前线程，申请内存成功后，还没有创建批次，在其他线程创建的批次里插入成功（这个场景很少出现）
                 RecordAppendResult appendResult = tryAppend(timestamp, key, value, callback, dq);
                 if (appendResult != null) {
-                    // Somebody else found us a batch, return the one we waited for! Hopefully this doesn't happen often...
+                    // 批次存在，当前线程申请的内存要释放
                     free.deallocate(buffer);
                     return appendResult;
                 }
+
+                // 当前线程，申请内存成功后，创建批次
                 MemoryRecords records = MemoryRecords.emptyRecords(buffer, compression, this.batchSize);
                 RecordBatch batch = new RecordBatch(tp, records, time.milliseconds());
-                FutureRecordMetadata future = Utils.notNull(batch.tryAppend(timestamp, key, value, callback, time.milliseconds()));
 
+                // 当前线程，创建批次成功后，插入数据
+                FutureRecordMetadata future = Utils.notNull(batch.tryAppend(timestamp, key, value, callback, time.milliseconds()));
+                // 批次放入队列
                 dq.addLast(batch);
                 incomplete.add(batch);
+                // 返回结果
                 return new RecordAppendResult(future, dq.size() > 1 || batch.records.isFull(), true);
             }
         } finally {

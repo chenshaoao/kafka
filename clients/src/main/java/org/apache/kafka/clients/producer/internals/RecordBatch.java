@@ -70,12 +70,13 @@ public final class RecordBatch {
             long checksum = this.records.append(offsetCounter++, timestamp, key, value);
             this.maxRecordSize = Math.max(this.maxRecordSize, Record.recordSize(key, value));
             this.lastAppendTime = now;
+            // 包装批次的 Future
             FutureRecordMetadata future = new FutureRecordMetadata(this.produceFuture, this.recordCount,
                                                                    timestamp, checksum,
                                                                    key == null ? -1 : key.length,
                                                                    value == null ? -1 : value.length);
             if (callback != null)
-                thunks.add(new Thunk(callback, future));
+                thunks.add(new Thunk(callback, future)); // 包装 RecordMetadata 的 Future，存入批次
             this.recordCount++;
             return future;
         }

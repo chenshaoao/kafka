@@ -90,42 +90,42 @@ public final class BufferPool {
      *         forever)
      */
     public ByteBuffer allocate(int size, long maxTimeToBlockMs) throws InterruptedException {
+        // 缓存 = 未使用内存 + 内存池内存
+        // ByteBuffer.allocate(size) 分配内存只有两处 ⭐️⭐️⭐
+        // 如果你想要申请的内存的大小超过32M，报错
         if (size > this.totalMemory)
-            throw new IllegalArgumentException("Attempt to allocate " + size
-                                               + " bytes, but there is a hard limit of "
-                                               + this.totalMemory
-                                               + " on memory allocations.");
+            throw new IllegalArgumentException("Attempt to allocate " + size + " bytes, but there is a hard limit of " + this.totalMemory + " on memory allocations.");
 
         this.lock.lock();
         try {
-            // check if we have a free buffer of the right size pooled
+            // 标准：内存池里有匹配大小的内存块
             if (size == poolableSize && !this.free.isEmpty())
                 return this.free.pollFirst();
-
-            // now check if the request is immediately satisfiable with the
-            // memory on hand or if we need to block
+            // 内存池可用内存
             int freeListSize = this.free.size() * this.poolableSize;
+            // 场景一：总内存够用，初始化时 availableMemory 为总内存
             if (this.availableMemory + freeListSize >= size) {
-                // we have enough unallocated or pooled memory to immediately
-                // satisfy the request
+                // 判断是否需要释放内存池内存
                 freeUp(size);
                 this.availableMemory -= size;
                 lock.unlock();
-                return ByteBuffer.allocate(size);
+                return ByteBuffer.allocate(size); // ⭐️⭐️⭐ 首次直接分配（标准、非标），释放时判断标准才放入内存池
+            // 场景二：总内存不够用
             } else {
-                // we are out of memory and will have to block
-                int accumulated = 0;
+                int accumulated = 0; // 累计内存
                 ByteBuffer buffer = null;
+                // 初始化等待条件
                 Condition moreMemory = this.lock.newCondition();
                 long remainingTimeToBlockNs = TimeUnit.MILLISECONDS.toNanos(maxTimeToBlockMs);
-                this.waiters.addLast(moreMemory);
-                // loop over and over until we have a buffer or have reserved
-                // enough memory to allocate one
+                this.waiters.addLast(moreMemory); // 存储等待事件
+                // 循环判断累计内存
                 while (accumulated < size) {
                     long startWaitNs = time.nanoseconds();
                     long timeNs;
+                    // 是否超时
                     boolean waitingTimeElapsed;
                     try {
+                        // ⭐️⭐️⭐️ 等待
                         waitingTimeElapsed = !moreMemory.await(remainingTimeToBlockNs, TimeUnit.NANOSECONDS);
                     } catch (InterruptedException e) {
                         this.waiters.remove(moreMemory);
@@ -135,47 +135,46 @@ public final class BufferPool {
                         timeNs = Math.max(0L, endWaitNs - startWaitNs);
                         this.waitTime.record(timeNs, time.milliseconds());
                     }
-
+                    // 超时，抛异常
                     if (waitingTimeElapsed) {
                         this.waiters.remove(moreMemory);
                         throw new TimeoutException("Failed to allocate memory within the configured max blocking time " + maxTimeToBlockMs + " ms.");
                     }
 
                     remainingTimeToBlockNs -= timeNs;
-                    // check if we can satisfy this request from the free list,
-                    // otherwise allocate memory
+
+                    // 标准：内存池不为空，标准批次内存
                     if (accumulated == 0 && size == this.poolableSize && !this.free.isEmpty()) {
-                        // just grab a buffer from the free list
                         buffer = this.free.pollFirst();
                         accumulated = size;
+                    // 非标：减去累计分配的内存，判断是否需要释放内存池内存
                     } else {
-                        // we'll need to allocate memory, but we may only get
-                        // part of what we need on this iteration
                         freeUp(size - accumulated);
                         int got = (int) Math.min(size - accumulated, this.availableMemory);
-                        this.availableMemory -= got;
-                        accumulated += got;
+                        this.availableMemory -= got;    // 更新余额
+                        accumulated += got;             // 更新累计
+                        // 非标分配在下面执行
                     }
                 }
+                // 到这里，分配内存够用了
 
-                // remove the condition for this thread to let the next thread
-                // in line start getting memory
+                // ？？？remove the condition for this thread to let the next thread in line start getting memory
                 Condition removed = this.waiters.removeFirst();
                 if (removed != moreMemory)
                     throw new IllegalStateException("Wrong condition: this shouldn't happen.");
 
-                // signal any additional waiters if there is more memory left
-                // over for them
+                // 未分配内存剩余，唤醒等待线程
                 if (this.availableMemory > 0 || !this.free.isEmpty()) {
                     if (!this.waiters.isEmpty())
+                        // ⭐️⭐️⭐️ 唤醒
                         this.waiters.peekFirst().signal();
                 }
-
-                // unlock and return the buffer
                 lock.unlock();
                 if (buffer == null)
-                    return ByteBuffer.allocate(size);
+                    // 非标：内存分配
+                    return ByteBuffer.allocate(size); // ⭐️⭐️⭐ 分配内存，二次非标分配
                 else
+                    // 标准：内存池
                     return buffer;
             }
         } finally {
@@ -189,6 +188,7 @@ public final class BufferPool {
      * buffers (if needed)
      */
     private void freeUp(int size) {
+        // 循环判断，未分配内存不够，释放内存池内存进行补充
         while (!this.free.isEmpty() && this.availableMemory < size)
             this.availableMemory += this.free.pollLast().capacity();
     }
