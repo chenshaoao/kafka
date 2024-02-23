@@ -127,6 +127,9 @@ public final class RecordAccumulator {
                                      byte[] value,
                                      Callback callback,
                                      long maxTimeToBlock) throws InterruptedException {
+        /**
+         * ⭐️⭐️⭐ 多线程编程，代码模版。
+         */
         // We keep track of the number of appending thread to make sure we do not miss batches in abortIncompleteBatches().
         /**
          * @see Sender#run()

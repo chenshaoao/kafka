@@ -50,11 +50,95 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
-
+/**
+ * A Kafka client that publishes records to the Kafka cluster.
+ * <P>
+ * The producer is <i>thread safe</i> and sharing a single producer instance across threads will generally be faster than
+ * having multiple instances.
+ * <p>
+ * Here is a simple example of using the producer to send records with strings containing sequential numbers as the key/value
+ * pairs.
+ * <pre>
+ * {@code
+ * Properties props = new Properties();
+ * props.put("bootstrap.servers", "localhost:9092");
+ * props.put("acks", "all");
+ * props.put("retries", 0);
+ * props.put("batch.size", 16384);
+ * props.put("linger.ms", 1);
+ * props.put("buffer.memory", 33554432);
+ * props.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+ * props.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+ *
+ * Producer<String, String> producer = new KafkaProducer<>(props);
+ * for(int i = 0; i < 100; i++)
+ *     producer.send(new ProducerRecord<String, String>("my-topic", Integer.toString(i), Integer.toString(i)));
+ *
+ * producer.close();
+ * }</pre>
+ * <p>
+ * The producer consists of a pool of buffer space that holds records that haven't yet been transmitted to the server
+ * as well as a background I/O thread that is responsible for turning these records into requests and transmitting them
+ * to the cluster. Failure to close the producer after use will leak these resources.
+ * <p>
+ * The {@link #send(ProducerRecord) send()} method is asynchronous. When called it adds the record to a buffer of pending record sends
+ * and immediately returns. This allows the producer to batch together individual records for efficiency.
+ * <p>
+ * The <code>acks</code> config controls the criteria under which requests are considered complete. The "all" setting
+ * we have specified will result in blocking on the full commit of the record, the slowest but most durable setting.
+ * <p>
+ * If the request fails, the producer can automatically retry, though since we have specified <code>retries</code>
+ * as 0 it won't. Enabling retries also opens up the possibility of duplicates (see the documentation on
+ * <a href="http://kafka.apache.org/documentation.html#semantics">message delivery semantics</a> for details).
+ * <p>
+ * The producer maintains buffers of unsent records for each partition. These buffers are of a size specified by
+ * the <code>batch.size</code> config. Making this larger can result in more batching, but requires more memory (since we will
+ * generally have one of these buffers for each active partition).
+ * <p>
+ * By default a buffer is available to send immediately even if there is additional unused space in the buffer. However if you
+ * want to reduce the number of requests you can set <code>linger.ms</code> to something greater than 0. This will
+ * instruct the producer to wait up to that number of milliseconds before sending a request in hope that more records will
+ * arrive to fill up the same batch. This is analogous to Nagle's algorithm in TCP. For example, in the code snippet above,
+ * likely all 100 records would be sent in a single request since we set our linger time to 1 millisecond. However this setting
+ * would add 1 millisecond of latency to our request waiting for more records to arrive if we didn't fill up the buffer. Note that
+ * records that arrive close together in time will generally batch together even with <code>linger.ms=0</code> so under heavy load
+ * batching will occur regardless of the linger configuration; however setting this to something larger than 0 can lead to fewer, more
+ * efficient requests when not under maximal load at the cost of a small amount of latency.
+ * <p>
+ * The <code>buffer.memory</code> controls the total amount of memory available to the producer for buffering. If records
+ * are sent faster than they can be transmitted to the server then this buffer space will be exhausted. When the buffer space is
+ * exhausted additional send calls will block. The threshold for time to block is determined by <code>max.block.ms</code> after which it throws
+ * a TimeoutException.
+ * <p>
+ * The <code>key.serializer</code> and <code>value.serializer</code> instruct how to turn the key and value objects the user provides with
+ * their <code>ProducerRecord</code> into bytes. You can use the included {@link org.apache.kafka.common.serialization.ByteArraySerializer} or
+ * {@link org.apache.kafka.common.serialization.StringSerializer} for simple string or byte types.
+ */
 
 /**
  *
+ * 亮眼标题：
+ * 1. 阿里P8说没有看过这段Kafka源码（内容核心是讲清楚源码讲解思路）
+ * 2. Kafka源码分析，不用万字长文（内容核心是讲清楚框架大图）
+ *
  * import 里引入了全路径，注释里就不用写全路径了。
+ * 全局类图，核心类注释一定要好好看看。
+ *
+ * 差异化：
+ * 1. 给出逻辑框架（不要直接陷入细节）（前世今生，为什么这么写）
+ * 2. 总结代码模板
+ *
+ * 多线程代码模版：
+ * @see KafkaProducer#waitOnMetadata
+ * @see RecordAccumulator#append
+ *
+ * 重试代码模板：
+ * @see Metadata#awaitUpdate
+ *
+ * 异常处理：
+ * 底层处理异常上抛，核心流程统一处理异常。
+ * @see Metadata#awaitUpdate
+ *
  * 业务线程：
  * @see KafkaProducer#KafkaProducer【1】
  * @see KafkaProducer#doSend【2】
@@ -155,6 +239,8 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             userProvidedConfigs.put(ProducerConfig.CLIENT_ID_CONFIG, clientId);
 
             // 网络的初始化配置
+
+            // 重试时间间隔
             long retryBackoffMs = config.getLong(ProducerConfig.RETRY_BACKOFF_MS_CONFIG);
 
             // if else 是为了兼容历史版本
@@ -223,6 +309,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                     time);
 
             List<InetSocketAddress> addresses = ClientUtils.parseAndValidateAddresses(config.getList(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG));
+            // metadata 初始化 Cluster 信息。 Cluster.bootstrap(addresses) 初始化主机Node编号和主机IP。
             this.metadata.update(Cluster.bootstrap(addresses), time.milliseconds());
 
             // 步骤七：初始化网络组件
@@ -285,6 +372,10 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
              * 第一次发送消息时，如果没有元数据，要同步元数据，发送耗时会比较长，后面的就直接读缓存的。在算法中类似平均复杂度的场景，平均到每次发送就被抵消了。
              *
              * （TODO 第一次如果超时了，如何处理？抛异常？remainingWaitMs 在分配内存的时候也会使用的）
+             *
+             * 对于业务线程来说，maxBlockTimeMs 表示一次消息发送最大阻塞时间。拉取元数据阻塞和申请内存阻塞共享的这个阻塞时间。
+             * 这里如果超时了，会调用回调方法，如果回调方法不处理，就会丢消息。（这里的回调执行线程是业务线程）
+             * Kafka 消费的时候，只要异常处理合理，不会丢消息的。（关键看 offset 维护逻辑）
              *
              */
             // 步骤一：获取 topic 的集群元数据（第一次一定要有）
@@ -364,8 +455,13 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private ClusterAndWaitTime waitOnMetadata(String topic, Integer partition, long maxWaitMs) throws InterruptedException {
 
         /**
+         * ⭐️⭐️⭐ 多线程编程，代码模版。
+         */
+        /**
          * 多线程编程： try 简单逻辑，while 循环，重试逻辑，赋值逻辑相同。
          * 共同逻辑：获取集群、校验分区有效、返回结果。
+         *
+         *
          */
         /**
          *

@@ -50,6 +50,7 @@ public final class Metadata {
     public static final long TOPIC_EXPIRY_MS = 5 * 60 * 1000;
     private static final long TOPIC_EXPIRY_NEEDS_UPDATE = -1L;
 
+    // 两次更新元数据时间间隔
     private final long refreshBackoffMs;
     private final long metadataExpireMs;
     private int version;
@@ -144,19 +145,31 @@ public final class Metadata {
      * Wait for metadata update until the current version is larger than the last version we know of
      */
     public synchronized void awaitUpdate(final int lastVersion, final long maxWaitMs) throws InterruptedException {
+        // 防御编程，参数校验
         if (maxWaitMs < 0) {
             throw new IllegalArgumentException("Max time to wait for metadata updates should not be < 0 milli seconds");
         }
-        long begin = System.currentTimeMillis();
-        long remainingWaitMs = maxWaitMs;
+        /**
+         * ⭐️⭐️⭐ 重试逻辑，代码模版。
+         */
+        long begin = System.currentTimeMillis();                // 重试逻辑：初始化开始时间（累计）
+        long remainingWaitMs = maxWaitMs;                       // 重试逻辑：初始化剩余时间（余量）
         // 判断版本，如果版本不对，继续等待（不用if，用while，唤醒后条件不一定满足）
         while (this.version <= lastVersion) {
-            if (remainingWaitMs != 0)
-                wait(remainingWaitMs);
-            long elapsed = System.currentTimeMillis() - begin;
+            // 剩余等待时间不为0
+            if (remainingWaitMs != 0)                           // 重试逻辑：判断剩余时间（判断余量）
+                /**
+                 * 唤醒代码：
+                 * @see Metadata#update IO线程更新完成后会唤醒等待的业务线程
+                 */
+                wait(remainingWaitMs);                          // 重试逻辑：使用剩余时间（使用余量）（参与业务逻辑）
+            // 执行到这，要么被唤醒了，要么超时了。
+            long elapsed = System.currentTimeMillis() - begin;  // 重试逻辑：计算使用时间（更新累计）
+            // 如果消耗时间大于最大等待时间，报超时异常
             if (elapsed >= maxWaitMs)
+                // 异常处理：底层处理异常上抛，核心流程统一处理异常
                 throw new TimeoutException("Failed to update metadata after " + maxWaitMs + " ms.");
-            remainingWaitMs = maxWaitMs - elapsed;
+            remainingWaitMs = maxWaitMs - elapsed;              // 重试逻辑：更新剩余时间（更新余量）
         }
     }
 
@@ -195,15 +208,22 @@ public final class Metadata {
      * is set for topics if required and expired topics are removed from the metadata.
      */
     public synchronized void update(Cluster cluster, long now) {
+
+        /**
+         * 初始化和响应的时候都会调用这个方法
+         */
+
         Objects.requireNonNull(cluster, "cluster should not be null");
 
         this.needUpdate = false;
         this.lastRefreshMs = now;
         this.lastSuccessfulRefreshMs = now;
-        this.version += 1;
+        this.version += 1; // 版本+1
 
+        // Metadata 创建的时候，默认值为 true
         if (topicExpiryEnabled) {
             // Handle expiry of topics from the metadata refresh set.
+            // 构造器的时候，topic 还没有设置，发送的时候设置 topic。
             for (Iterator<Map.Entry<String, Long>> it = topics.entrySet().iterator(); it.hasNext(); ) {
                 Map.Entry<String, Long> entry = it.next();
                 long expireMs = entry.getValue();
@@ -227,6 +247,7 @@ public final class Metadata {
             this.needUpdate = false;
             this.cluster = getClusterForCurrentTopics(cluster);
         } else {
+            // 构造器的时候，直接赋值
             this.cluster = cluster;
         }
 
@@ -238,6 +259,8 @@ public final class Metadata {
             clusterResourceListeners.onUpdate(cluster.clusterResource());
         }
 
+        // 发送消息时，等待元数据更新完成，awaitUpdate
+        // 唤醒所有等待线程
         notifyAll();
         log.debug("Updated cluster metadata version {} to {}", this.version, this.cluster);
     }
