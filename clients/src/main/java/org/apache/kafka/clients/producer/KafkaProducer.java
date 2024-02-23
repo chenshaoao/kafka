@@ -97,6 +97,22 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     @SuppressWarnings({"unchecked", "deprecation"})
     private KafkaProducer(ProducerConfig config, Serializer<K> keySerializer, Serializer<V> valueSerializer) {
         try {
+
+            /**
+             *
+             * NetworkClient 类比 Web 服务的 HttpClient。
+             *
+             * HttpClient 也需要这些初始化配置
+             * retryBackoffMs、maxBlockTimeMs、requestTimeoutMs、maxRequestSize
+             *
+             * HttpClient 指定的域名和IP，Kafka 需要自己负载均衡，指定分区对应的主机
+             *
+             * HttpClient 也会指定序列化和压缩格式
+             *
+             * 所有的发送逻辑都是 NetworkClient 处理的，请求封装，响应处理。
+             * @see NetworkClient#poll(long, long)
+             *
+             */
             // 用户自定义配置：初始化
             Map<String, Object> userProvidedConfigs = config.originals();
             this.producerConfig = config;
@@ -108,8 +124,10 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             // 用户自定义配置：设置客户端id
             userProvidedConfigs.put(ProducerConfig.CLIENT_ID_CONFIG, clientId);
 
+            // 网络的初始化配置
             long retryBackoffMs = config.getLong(ProducerConfig.RETRY_BACKOFF_MS_CONFIG);
 
+            // if else 是为了兼容历史版本
             if (userProvidedConfigs.containsKey(ProducerConfig.BLOCK_ON_BUFFER_FULL_CONFIG)) {
                 boolean blockOnBufferFull = config.getBoolean(ProducerConfig.BLOCK_ON_BUFFER_FULL_CONFIG);
                 if (blockOnBufferFull) {
@@ -126,16 +144,12 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             }
 
             if (userProvidedConfigs.containsKey(ProducerConfig.TIMEOUT_CONFIG)) {
-                log.warn(ProducerConfig.TIMEOUT_CONFIG + " config is deprecated and will be removed soon. Please use " +
-                        ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG);
                 this.requestTimeoutMs = config.getInt(ProducerConfig.TIMEOUT_CONFIG);
             } else {
                 this.requestTimeoutMs = config.getInt(ProducerConfig.REQUEST_TIMEOUT_MS_CONFIG);
             }
             this.maxRequestSize = config.getInt(ProducerConfig.MAX_REQUEST_SIZE_CONFIG);
             this.totalMemorySize = config.getLong(ProducerConfig.BUFFER_MEMORY_CONFIG);
-
-
 
             // 步骤一：设置分区器（负载均衡）
             this.partitioner = config.getConfiguredInstance(ProducerConfig.PARTITIONER_CLASS_CONFIG, Partitioner.class);
@@ -237,6 +251,12 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
     private Future<RecordMetadata> doSend(ProducerRecord<K, V> record, Callback callback) {
         TopicPartition tp = null;
         try {
+            /**
+             * 第一次发送消息时，如果没有元数据，要同步元数据，发送耗时会比较长，后面的就直接读缓存的。在算法中类似平均复杂度的场景，平均到每次发送就被抵消了。
+             *
+             * （TODO 第一次如果超时了，如何处理？抛异常？remainingWaitMs 在分配内存的时候也会使用的）
+             *
+             */
             // 步骤一：获取 topic 的集群元数据（第一次一定要有）
             ClusterAndWaitTime clusterAndWaitTime = waitOnMetadata(record.topic(), record.partition(), maxBlockTimeMs);
             long remainingWaitMs = Math.max(0, maxBlockTimeMs - clusterAndWaitTime.waitedOnMetadataMs);
@@ -247,39 +267,37 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             try {
                 serializedKey = keySerializer.serialize(record.topic(), record.key());
             } catch (ClassCastException cce) {
-                throw new SerializationException("Can't convert key of class " + record.key().getClass().getName() +
-                        " to class " + producerConfig.getClass(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG).getName() +
-                        " specified in key.serializer");
+                throw new SerializationException("Can't convert key of class " + record.key().getClass().getName() + " to class " + producerConfig.getClass(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG).getName() + " specified in key.serializer");
             }
             byte[] serializedValue;
             try {
                 serializedValue = valueSerializer.serialize(record.topic(), record.value());
             } catch (ClassCastException cce) {
-                throw new SerializationException("Can't convert value of class " + record.value().getClass().getName() +
-                        " to class " + producerConfig.getClass(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG).getName() +
-                        " specified in value.serializer");
+                throw new SerializationException("Can't convert value of class " + record.value().getClass().getName() + " to class " + producerConfig.getClass(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG).getName() + " specified in value.serializer");
             }
             // 步骤三：计算分区（负载均衡）
             int partition = partition(record, serializedKey, serializedValue, cluster);
             // 步骤四：计算消息大小
             int serializedSize = Records.LOG_OVERHEAD + Record.recordSize(serializedKey, serializedValue);
             ensureValidRecordSize(serializedSize);
-            tp = new TopicPartition(record.topic(), partition);
+            tp = new TopicPartition(record.topic(), partition); // 消息要发到，哪个 topic ，哪个 partition
             long timestamp = record.timestamp() == null ? time.milliseconds() : record.timestamp();
             // 步骤五：设置回调函数
             Callback interceptCallback = this.interceptors == null ? callback : new InterceptorCallback<>(callback, this.interceptors, tp);
             // 步骤六：消息存储 ⭐
             RecordAccumulator.RecordAppendResult result = accumulator.append(tp, timestamp, serializedKey, serializedValue, interceptCallback, remainingWaitMs);
+            // 批次满了才发，qps 1k，每次都发必挂，批次满了再发
             if (result.batchIsFull || result.newBatchCreated) {
                 // 步骤七：如果批次满足发送条件，唤醒IO线程
                 /**
                  * ⭐️⭐️⭐️ 多线程专题：IO线程阻塞唤醒
+                 * @see org.apache.kafka.common.network.Selector#poll(long) 处理请求
                  * @see Selector#select(long) 阻塞
                  * @see org.apache.kafka.common.network.Selector#wakeup() 唤醒
                  */
-                this.sender.wakeup();
+                this.sender.wakeup();   // 业务线程 唤醒 IO线程。
             }
-            // 步骤八：返回future
+            // 步骤八：返回事件引用
             return result.future;
         } catch (ApiException e) {
             if (callback != null)
@@ -312,32 +330,50 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         }
     }
 
+
     private ClusterAndWaitTime waitOnMetadata(String topic, Integer partition, long maxWaitMs) throws InterruptedException {
+
+        /**
+         * 多线程编程： try 简单逻辑，while 循环，重试逻辑，赋值逻辑相同。
+         * 共同逻辑：获取集群、校验分区有效、返回结果。
+         */
+        /**
+         *
+         * 业务线程：设置更新状态，然后等待。
+         * IO线程：实际执行网络请求。
+         * 更新 Metadata.needUpdate = true; 通过 needUpdate 的使用，看触发逻辑。
+         *
+         * 更新 Metadata 流程：IO线程异步更新 Metadata，组装 MetadataRequest。
+         * @see NetworkClient#poll(long, long)
+         * @see NetworkClient.DefaultMetadataUpdater#maybeUpdate(long)
+         *      @see Metadata#timeToNextUpdate
+         * @see NetworkClient#handleCompletedReceives(java.util.List, long)
+         * @see NetworkClient.DefaultMetadataUpdater#maybeHandleCompletedReceive
+         * @see NetworkClient.DefaultMetadataUpdater#handleResponse
+         *
+         */
+
         // 把当前 topic 加入元数据 topic 列表
         metadata.add(topic);
-        // 集群缓存
+        // 步骤一：获取集群缓存
         Cluster cluster = metadata.fetch();
         Integer partitionsCount = cluster.partitionCountForTopic(topic);
-        // 分区存在，并且分区有效（中文非常简洁，博大精深）
+        // 步骤二：分区校验：分区存在，并且分区有效（中文非常简洁，博大精深）
         if (partitionsCount != null && (partition == null || partition < partitionsCount))
+            // 步骤三：返回结果
             return new ClusterAndWaitTime(cluster, 0);
 
         long begin = time.milliseconds();
         long remainingWaitMs = maxWaitMs;
         long elapsed;
         do {
+            // 更新 Metadata.needUpdate = true; IO线程异步更新。
+            // KafkaProducer 初始化的时候，version+1 了，这里直接返回当前值。
             int version = metadata.requestUpdate();
-            /**
-             * 唤醒IO线程，处理请求
-             * @see Selector#wakeup()
-             */
+            // 唤醒IO线程，处理请求
             sender.wakeup();
             try {
-                /**
-                 * 二级循环，判断版本，如果版本不对，业务线程等待
-                 * IO线程，处理响应后唤醒等待的业务线程（源码讲解的亮点，前后呼应）
-                 * @see org.apache.kafka.clients.NetworkClient.DefaultMetadataUpdater#handleResponse
-                 */
+                // 步骤一：获取集群缓存。版本判断，条件不满足，循环等待。
                 metadata.awaitUpdate(version, remainingWaitMs);
             } catch (TimeoutException ex) {
                 throw new TimeoutException("Failed to update metadata after " + maxWaitMs + " ms.");
@@ -348,31 +384,27 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 throw new TimeoutException("Failed to update metadata after " + maxWaitMs + " ms.");
             if (cluster.unauthorizedTopics().contains(topic))
                 throw new TopicAuthorizationException(topic);
-            remainingWaitMs = maxWaitMs - elapsed;
+            remainingWaitMs = maxWaitMs - elapsed; // 更新重试剩余时间
             partitionsCount = cluster.partitionCountForTopic(topic);
         } while (partitionsCount == null);
 
-        // 分区无效
+        // 正常执行完成。
+        // 如果超时，前面 while 循环里已经抛异常了。
+
+        // 步骤二：分区校验，分区无效
         if (partition != null && partition >= partitionsCount) {
-            throw new KafkaException(
-                    String.format("Invalid partition given with record: %d is not in the range [0...%d).", partition, partitionsCount));
+            throw new KafkaException(String.format("Invalid partition given with record: %d is not in the range [0...%d).", partition, partitionsCount));
         }
-        // 如果超时 while 循环里抛异常
+        // 步骤三：返回结果
         return new ClusterAndWaitTime(cluster, elapsed);
     }
 
 
     private void ensureValidRecordSize(int size) {
         if (size > this.maxRequestSize)
-            throw new RecordTooLargeException("The message is " + size +
-                                              " bytes when serialized which is larger than the maximum request size you have configured with the " +
-                                              ProducerConfig.MAX_REQUEST_SIZE_CONFIG +
-                                              " configuration.");
+            throw new RecordTooLargeException("The message is " + size + " bytes when serialized which is larger than the maximum request size you have configured with the " + ProducerConfig.MAX_REQUEST_SIZE_CONFIG + " configuration.");
         if (size > this.totalMemorySize)
-            throw new RecordTooLargeException("The message is " + size +
-                                              " bytes when serialized which is larger than the total memory buffer you have configured with the " +
-                                              ProducerConfig.BUFFER_MEMORY_CONFIG +
-                                              " configuration.");
+            throw new RecordTooLargeException("The message is " + size + " bytes when serialized which is larger than the total memory buffer you have configured with the " + ProducerConfig.BUFFER_MEMORY_CONFIG + " configuration.");
     }
 
     @Override

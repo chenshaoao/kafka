@@ -129,13 +129,14 @@ public final class RecordAccumulator {
                                      long maxTimeToBlock) throws InterruptedException {
         // We keep track of the number of appending thread to make sure we do not miss batches in abortIncompleteBatches().
         /**
-         * @see RecordAccumulator#abortIncompleteBatches()
+         * @see Sender#run()
+         * @see RecordAccumulator#abortIncompleteBatches() 强制关闭的时候用
          */
         appendsInProgress.incrementAndGet();
         try {
             Deque<RecordBatch> dq = getOrCreateDeque(tp);
             // 场景一：批次存在
-            synchronized (dq) {
+            synchronized (dq) { // 分区间互相隔离，加锁
                 if (closed) // 判断是否关闭
                     throw new IllegalStateException("Cannot send after the producer is closed.");
                 /**
@@ -169,6 +170,7 @@ public final class RecordAccumulator {
                 MemoryRecords records = MemoryRecords.emptyRecords(buffer, compression, this.batchSize);
                 RecordBatch batch = new RecordBatch(tp, records, time.milliseconds());
 
+                // 这里的代码 和  tryAppend 里面的代码逻辑一样。上面是try，这里是常规逻辑。   快车道，慢车道（循规蹈矩，全流程）。
                 // 当前线程，创建批次成功后，插入数据
                 FutureRecordMetadata future = Utils.notNull(batch.tryAppend(timestamp, key, value, callback, time.milliseconds()));
                 // 批次放入队列

@@ -24,7 +24,7 @@ import org.apache.kafka.clients.producer.RecordMetadata;
  */
 public final class FutureRecordMetadata implements Future<RecordMetadata> {
 
-    private final ProduceRequestResult result;
+    private final ProduceRequestResult result; // 锁
     private final long relativeOffset;
     private final long timestamp;
     private final long checksum;

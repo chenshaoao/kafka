@@ -138,11 +138,7 @@ public class Sender implements Runnable {
             }
         }
 
-        log.debug("Beginning shutdown of Kafka producer I/O thread, sending remaining records.");
-
-        // okay we stopped accepting requests but there may still be
-        // requests in the accumulator or waiting for acknowledgment,
-        // wait until these are completed.
+        // 正常关闭，发送未完成的消息
         while (!forceClose && (this.accumulator.hasUnsent() || this.client.inFlightRequestCount() > 0)) {
             try {
                 run(time.milliseconds());
@@ -150,9 +146,8 @@ public class Sender implements Runnable {
                 log.error("Uncaught error in kafka producer I/O thread: ", e);
             }
         }
+        // 强制关闭，删除未完成的消息，唤醒在future上等待的业务线程
         if (forceClose) {
-            // We need to fail all the incomplete batches and wake up the threads waiting on
-            // the futures.
             this.accumulator.abortIncompleteBatches();
         }
         try {
@@ -171,21 +166,23 @@ public class Sender implements Runnable {
      *            The current POSIX time in milliseconds
      */
     void run(long now) {
+
+        /** this.accumulator.drain 的编程模式类似业务中查询全部，分组处理。
+         *  job select all 数据，分组，for 循环处理，批价
+         */
+
         Cluster cluster = metadata.fetch();
-        // get the list of partitions with data ready to send
+        // 返回有数据的主题分区列表
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
 
-        // if there are any partitions whose leaders are not known yet, force metadata update
+        // 如果主题分区没有 leader 节点，更新 Metadata。TODO unknownLeaderTopics 的场景
         if (!result.unknownLeaderTopics.isEmpty()) {
-            // The set of topics with unknown leader contains topics with leader election pending as well as
-            // topics which may have expired. Add the topic again to metadata to ensure it is included
-            // and request metadata update, since there are messages to send to the topic.
             for (String topic : result.unknownLeaderTopics)
                 this.metadata.add(topic);
             this.metadata.requestUpdate();
         }
 
-        // remove any nodes we aren't ready to send to
+        // 移除没有准备好的主机。连接建立 + 批次
         Iterator<Node> iter = result.readyNodes.iterator();
         long notReadyTimeout = Long.MAX_VALUE;
         while (iter.hasNext()) {
@@ -196,11 +193,10 @@ public class Sender implements Runnable {
             }
         }
 
-        // create produce requests
-        Map<Integer, List<RecordBatch>> batches = this.accumulator.drain(cluster,
-                                                                         result.readyNodes,
-                                                                         this.maxRequestSize,
-                                                                         now);
+        // 按主机分组消息批次
+        Map<Integer, List<RecordBatch>> batches = this.accumulator.drain(cluster, result.readyNodes, this.maxRequestSize, now);
+
+        // 是否保证消息有序
         if (guaranteeMessageOrder) {
             // Mute all the partitions drained
             for (List<RecordBatch> batchList : batches.values()) {
@@ -208,32 +204,33 @@ public class Sender implements Runnable {
                     this.accumulator.mutePartition(batch.topicPartition);
             }
         }
+        // 删除过期的批次
+        this.accumulator.abortExpiredBatches(this.requestTimeout, now);
 
-        List<RecordBatch> expiredBatches = this.accumulator.abortExpiredBatches(this.requestTimeout, now);
-        // update sensors
-        for (RecordBatch expiredBatch : expiredBatches)
-            this.sensors.recordErrors(expiredBatch.topicPartition.topic(), expiredBatch.recordCount);
-
-        sensors.updateProduceRequestMetrics(batches);
+        // 构建请求
         List<ClientRequest> requests = createProduceRequests(batches, now);
-        // If we have any nodes that are ready to send + have sendable data, poll with 0 timeout so this can immediately
-        // loop and try sending more data. Otherwise, the timeout is determined by nodes that have partitions with data
-        // that isn't yet sendable (e.g. lingering, backing off). Note that this specifically does not include nodes
-        // with sendable data that aren't ready to send since they would cause busy looping.
+
+        // 设置轮训超时时间，有数据，设置超时时间为0
         long pollTimeout = Math.min(result.nextReadyCheckDelayMs, notReadyTimeout);
         if (result.readyNodes.size() > 0) {
-            log.trace("Nodes with data ready to send: {}", result.readyNodes);
-            log.trace("Created {} produce requests: {}", requests.size(), requests);
             pollTimeout = 0;
         }
+
+        // 业务线程 dosender 方法，把消息放入  accumulator  暂存。
+        // IO线程把 request 聚合后，放入 channel 暂存。
+        // selector.poll 最终统一处理
+
+        // TODO client.poll 里 select 方法被 业务线程 唤醒后，重头开始执行 run 方法，准备新一轮的数据。
         for (ClientRequest request : requests)
-            client.send(request, now);
+            client.send(request, now); // for 循环，是循环主机，一个主机绑定一个 request，request 对象已经聚合过的
+
+        // IO多路复用，复用的连接，channel，通过一个线程的统一 poll 进行多个连接的同时发送。
 
         // if some partitions are already ready to be sent, the select time would be 0;
         // otherwise if some partition already has some data accumulated but not ready yet,
         // the select time will be the time difference between now and its linger expiry time;
         // otherwise the select time will be the time difference between now and the metadata expiry time;
-        this.client.poll(pollTimeout, now);
+        this.client.poll(pollTimeout, now); // 所有 channel 循环发送。阻塞io处理是绑定和发送同步。非阻塞是绑定和发送分开。统一发送。
     }
 
     /**
