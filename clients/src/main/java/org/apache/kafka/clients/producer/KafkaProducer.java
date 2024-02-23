@@ -131,6 +131,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 多线程代码模版：
  * @see KafkaProducer#waitOnMetadata
  * @see RecordAccumulator#append
+ * 
  *
  * 重试代码模板：
  * @see Metadata#awaitUpdate
