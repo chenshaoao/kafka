@@ -171,11 +171,24 @@ public class Sender implements Runnable {
          *  job select all 数据，分组，for 循环处理，批价
          */
 
+        /**
+         * 1. 业务线程 dosender 方法，把消息放入  accumulator  暂存。
+         * 2. IO线程把 request 聚合后，放入 channel 暂存。
+         * 3. selector.poll 最终统一处理
+         *
+         * for 循环，是循环主机，一个主机绑定一个 request，request 对象已经聚合过的。
+         * IO多路复用，复用的连接，channel，通过一个线程的统一 poll 进行多个连接的同时发送。
+         *
+         * TODO client.poll 里 select 方法被 业务线程 唤醒后，重头开始执行 run 方法，准备新一轮的数据
+         * TODO unknownLeaderTopics 的场景
+         */
+
+        // 获取集群（缓存）
         Cluster cluster = metadata.fetch();
         // 返回有数据的主题分区列表
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
 
-        // 如果主题分区没有 leader 节点，更新 Metadata。TODO unknownLeaderTopics 的场景
+        // 如果存在主题分区没有 leader 节点，更新 Metadata。
         if (!result.unknownLeaderTopics.isEmpty()) {
             for (String topic : result.unknownLeaderTopics)
                 this.metadata.add(topic);
@@ -207,28 +220,23 @@ public class Sender implements Runnable {
         // 删除过期的批次
         this.accumulator.abortExpiredBatches(this.requestTimeout, now);
 
-        // 构建请求
+        // 将批次封装为请求对象
         List<ClientRequest> requests = createProduceRequests(batches, now);
 
+        // If we have any nodes that are ready to send + have sendable data, poll with 0 timeout so this can immediately loop and try sending more data.
+        // Otherwise, the timeout is determined by nodes that have partitions with data that isn't yet sendable (e.g. lingering, backing off).
+        // Note that this specifically does not include nodes with sendable data that aren't ready to send since they would cause busy looping.
         // 设置轮训超时时间，有数据，设置超时时间为0
         long pollTimeout = Math.min(result.nextReadyCheckDelayMs, notReadyTimeout);
         if (result.readyNodes.size() > 0) {
             pollTimeout = 0;
         }
-
-        // 业务线程 dosender 方法，把消息放入  accumulator  暂存。
-        // IO线程把 request 聚合后，放入 channel 暂存。
-        // selector.poll 最终统一处理
-
-        // TODO client.poll 里 select 方法被 业务线程 唤醒后，重头开始执行 run 方法，准备新一轮的数据。
+        // 设置超时时间；放入 inFlightRequests；绑定 channel。
         for (ClientRequest request : requests)
-            client.send(request, now); // for 循环，是循环主机，一个主机绑定一个 request，request 对象已经聚合过的
-
-        // IO多路复用，复用的连接，channel，通过一个线程的统一 poll 进行多个连接的同时发送。
+            client.send(request, now);
 
         // if some partitions are already ready to be sent, the select time would be 0;
-        // otherwise if some partition already has some data accumulated but not ready yet,
-        // the select time will be the time difference between now and its linger expiry time;
+        // otherwise if some partition already has some data accumulated but not ready yet, the select time will be the time difference between now and its linger expiry time;
         // otherwise the select time will be the time difference between now and the metadata expiry time;
         this.client.poll(pollTimeout, now); // 所有 channel 循环发送。阻塞io处理是绑定和发送同步。非阻塞是绑定和发送分开。统一发送。
     }

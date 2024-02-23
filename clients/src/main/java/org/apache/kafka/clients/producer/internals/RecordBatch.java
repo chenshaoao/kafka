@@ -77,9 +77,9 @@ public final class RecordBatch {
                                                                    value == null ? -1 : value.length);
             if (callback != null)
                 // 异步回调的时候用的
-            /** FutureRecordMetadata 存储了同步的事件，也冗余存储了异步的消息元数据
-             * @see Sender#handleProduceResponse(org.apache.kafka.clients.ClientResponse, java.util.Map, long)
-             */
+                /** FutureRecordMetadata 存储了同步的事件，也冗余存储了异步的消息元数据
+                 * @see Sender#handleProduceResponse(org.apache.kafka.clients.ClientResponse, java.util.Map, long)
+                 */
                 thunks.add(new Thunk(callback, future)); // 包装 RecordMetadata 的 Future，存入批次
             this.recordCount++;
             return future;

@@ -4,9 +4,7 @@ package org.apache.kafka.clients.producer;
 import org.apache.kafka.clients.ClientUtils;
 import org.apache.kafka.clients.Metadata;
 import org.apache.kafka.clients.NetworkClient;
-import org.apache.kafka.clients.producer.internals.ProducerInterceptors;
-import org.apache.kafka.clients.producer.internals.RecordAccumulator;
-import org.apache.kafka.clients.producer.internals.Sender;
+import org.apache.kafka.clients.producer.internals.*;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.KafkaException;
 import org.apache.kafka.common.Metric;
@@ -27,6 +25,7 @@ import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.metrics.MetricsReporter;
 import org.apache.kafka.common.metrics.Sensor;
 import org.apache.kafka.common.network.ChannelBuilder;
+import org.apache.kafka.common.network.KafkaChannel;
 import org.apache.kafka.common.network.Selector;
 import org.apache.kafka.common.record.CompressionType;
 import org.apache.kafka.common.record.Record;
@@ -51,6 +50,35 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
+
+
+/**
+ *
+ * import 里引入了全路径，注释里就不用写全路径了。
+ * 业务线程：
+ * @see KafkaProducer#KafkaProducer【1】
+ * @see KafkaProducer#doSend【2】
+ *      @see KafkaProducer#waitOnMetadata
+ *      @see KafkaProducer#partition
+ *      @see RecordAccumulator#append
+ *          @see RecordAccumulator#tryAppend
+ *              @see RecordBatch#tryAppend 单条记录添加到批次。TODO full 场景梳理
+ *          @see BufferPool#allocate
+ *          @see RecordBatch#RecordBatch
+ *
+ * IO线程：
+ * @see Sender#run(long)【3】
+ *      @see RecordAccumulator#ready
+ *      @see RecordAccumulator#drain
+ *      @see Sender#createProduceRequests
+ *      @see Sender#produceRequest
+ *      @see NetworkClient#send
+ *          @see NetworkClient#doSend
+ *              @see Selector#send
+ *                  @see KafkaChannel#setSend
+ *      @see NetworkClient#poll【4】
+ *
+ */
 public class KafkaProducer<K, V> implements Producer<K, V> {
 
     private static final Logger log = LoggerFactory.getLogger(KafkaProducer.class);
@@ -96,6 +124,8 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
     @SuppressWarnings({"unchecked", "deprecation"})
     private KafkaProducer(ProducerConfig config, Serializer<K> keySerializer, Serializer<V> valueSerializer) {
+
+
         try {
 
             /**
@@ -355,12 +385,12 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
         // 把当前 topic 加入元数据 topic 列表
         metadata.add(topic);
-        // 步骤一：获取集群缓存
+        // 快速步骤一：获取集群缓存
         Cluster cluster = metadata.fetch();
         Integer partitionsCount = cluster.partitionCountForTopic(topic);
-        // 步骤二：分区校验：分区存在，并且分区有效（中文非常简洁，博大精深）
+        // 快速步骤二：分区校验：分区存在，并且分区有效（中文非常简洁，博大精深）
         if (partitionsCount != null && (partition == null || partition < partitionsCount))
-            // 步骤三：返回结果
+            // 快速步骤三：返回结果
             return new ClusterAndWaitTime(cluster, 0);
 
         long begin = time.milliseconds();
@@ -373,7 +403,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             // 唤醒IO线程，处理请求
             sender.wakeup();
             try {
-                // 步骤一：获取集群缓存。版本判断，条件不满足，循环等待。
+                // 标准步骤一：获取集群缓存。版本判断，条件不满足，循环等待。
                 metadata.awaitUpdate(version, remainingWaitMs);
             } catch (TimeoutException ex) {
                 throw new TimeoutException("Failed to update metadata after " + maxWaitMs + " ms.");
@@ -391,11 +421,11 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         // 正常执行完成。
         // 如果超时，前面 while 循环里已经抛异常了。
 
-        // 步骤二：分区校验，分区无效
+        // 标准步骤二：分区校验，分区无效
         if (partition != null && partition >= partitionsCount) {
             throw new KafkaException(String.format("Invalid partition given with record: %d is not in the range [0...%d).", partition, partitionsCount));
         }
-        // 步骤三：返回结果
+        // 标准步骤三：返回结果
         return new ClusterAndWaitTime(cluster, elapsed);
     }
 

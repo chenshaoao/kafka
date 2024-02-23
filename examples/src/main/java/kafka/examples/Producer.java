@@ -16,10 +16,7 @@
  */
 package kafka.examples;
 
-import org.apache.kafka.clients.producer.Callback;
-import org.apache.kafka.clients.producer.KafkaProducer;
-import org.apache.kafka.clients.producer.ProducerRecord;
-import org.apache.kafka.clients.producer.RecordMetadata;
+import org.apache.kafka.clients.producer.*;
 
 import java.util.Properties;
 import java.util.concurrent.ExecutionException;
@@ -71,6 +68,7 @@ class DemoCallBack implements Callback {
     private final String message;
 
     public DemoCallBack(long startTime, int key, String message) {
+
         this.startTime = startTime;
         this.key = key;
         this.message = message;
