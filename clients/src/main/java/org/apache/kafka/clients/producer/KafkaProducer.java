@@ -130,6 +130,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 官网onboard，让顾客着陆。
  * 关注盗版（了解一下），文章里只给客服，不给官网，否则会认为打广告。
  * 免费也签约，使用微信专栏1元付费。
+ * 成员加上武宁，比较靠谱。
  *
  * 快捷键：
  * 代码提交： g + gp
