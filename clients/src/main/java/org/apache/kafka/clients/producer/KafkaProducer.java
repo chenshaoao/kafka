@@ -136,7 +136,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 代码提交： g + gp
  * 锚点定位：ctrl + 数字
  * cmd 1 2(收藏的代码） 3 7
- * ^H 导航
+ * ^H 看方法实现类
  *
  * import 里引入了全路径，注释里就不用写全路径了。
  * 全局类图，核心类注释一定要好好看看。
