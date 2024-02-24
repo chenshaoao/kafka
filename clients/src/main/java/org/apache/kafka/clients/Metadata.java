@@ -160,6 +160,7 @@ public final class Metadata {
             if (remainingWaitMs != 0)                           // 重试逻辑：判断剩余时间（判断余量）
                 /**
                  * 唤醒代码：
+                 * @see NetworkClient#poll
                  * @see Metadata#update IO线程更新完成后会唤醒等待的业务线程
                  */
                 wait(remainingWaitMs);                          // 重试逻辑：使用剩余时间（使用余量）（参与业务逻辑）

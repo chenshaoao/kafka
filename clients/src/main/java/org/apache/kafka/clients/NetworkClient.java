@@ -256,9 +256,10 @@ public class NetworkClient implements KafkaClient {
     @Override
     public List<ClientResponse> poll(long timeout, long now) {
 
-        // 元数据更新超时时间
+        // 元数据更新场景：1. 初始化请求，返回超时时间。请求绑定存储到channel。
         long metadataTimeout = metadataUpdater.maybeUpdate(now);
         try {
+            // 元数据更新场景：2. 发送请求
             // 三个超时时间，谁小取谁。
             // 如果为0，就马上轮训，否则就在 select 上阻塞超时时间。
             this.selector.poll(Utils.min(timeout, metadataTimeout, requestTimeoutMs));
@@ -270,6 +271,7 @@ public class NetworkClient implements KafkaClient {
         long updatedNow = this.time.milliseconds();
         List<ClientResponse> responses = new ArrayList<>();
         handleCompletedSends(responses, updatedNow);
+        // 元数据更新场景：3. 处理响应
         handleCompletedReceives(responses, updatedNow);
         handleDisconnections(responses, updatedNow);
         handleConnections();

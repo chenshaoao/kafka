@@ -183,7 +183,7 @@ public class Sender implements Runnable {
          * TODO unknownLeaderTopics 的场景
          */
 
-        // 获取集群（缓存）
+        // 获取集群（缓存）metadata.fetch() 这个方法的命名和不好
         Cluster cluster = metadata.fetch();
         // 返回有数据的主题分区列表
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
@@ -231,7 +231,7 @@ public class Sender implements Runnable {
         if (result.readyNodes.size() > 0) {
             pollTimeout = 0;
         }
-        // 设置超时时间；放入 inFlightRequests；绑定 channel。
+        // 设置超时时间；放入 inFlightRequests；请求绑定存储到 channel。
         for (ClientRequest request : requests)
             client.send(request, now);
 

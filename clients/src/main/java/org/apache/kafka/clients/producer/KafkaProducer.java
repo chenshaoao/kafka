@@ -120,18 +120,34 @@ import java.util.concurrent.atomic.AtomicReference;
  * 亮眼标题：
  * 1. 阿里P8说没有看过这段Kafka源码（内容核心是讲清楚源码讲解思路）
  * 2. Kafka源码分析，不用万字长文（内容核心是讲清楚框架大图）
+ * 2. Kafka黑话（内容核心是讲清楚Kafka核心概念和核心方法，对应的英文名词）
+ *
+ * 群：开源源码群，付费教程群，和群主说自己要分析文章，同意后群里发送。
+ * 准备好品牌账号。
+ * 声音处理。
+ *
+ * 快捷键：
+ * 代码提交： g + gp
+ * 锚点定位：ctrl + 数字
+ * cmd 1 2(收藏的代码） 3 7
+ * ^H 导航
  *
  * import 里引入了全路径，注释里就不用写全路径了。
  * 全局类图，核心类注释一定要好好看看。
  *
  * 差异化：
  * 1. 给出逻辑框架（不要直接陷入细节）（前世今生，为什么这么写）
- * 2. 总结代码模板
+ * 2. 总结代码模板，其他教程讲完了就让学生自己理解了，好的总结很重要（这个是差异化，对0基础的人非常友好）
+ * 3. 精准定位，让你不再成为无头苍蝇（无限的时间浪费，不知道处理逻辑在哪，呼应逻辑在哪）（AI时代，拼逻辑本质，运用能力，拯救你的时间）
+ * 4. 核心技术是不会过时的（世界级代码，小马哥的运维项目2016年就写好了）
+ * 5. 给出代码注释版的前提，还提供IDEA收藏脚本，0门槛启动代码阅读（这个是Pro 用户才有的）（很多用户在环境上卡死了）
+ * 6. 视频和直播伴读（这个是Pro用户才有的，现场回答疑问，总会有疑问的）按次收取课时费用，专题解答。首次1元1小时。有用再按折扣收取。
+ * 7. client 的源码解析全免费，服务端的源码解析收费。学习从简单开始，技术领域专注源码和业务场景结合。
  *
  * 多线程代码模版：
  * @see KafkaProducer#waitOnMetadata
  * @see RecordAccumulator#append
- * 
+ *
  *
  * 重试代码模板：
  * @see Metadata#awaitUpdate
@@ -150,6 +166,30 @@ import java.util.concurrent.atomic.AtomicReference;
  *              @see RecordBatch#tryAppend 单条记录添加到批次。TODO full 场景梳理
  *          @see BufferPool#allocate
  *          @see RecordBatch#RecordBatch
+ * 命名专题：
+ * @see Sender#run(long) metadata.fetch() 命名很不好。
+ *
+ * 核心概念专题：核心方法专题
+ *
+ * 处理框架：
+ * 1. 封装请求
+ * 2. 发送请求
+ * 3. 处理响应
+ * 写作： 输入，思考，输出
+ * 业务/研发： 需求，执行，验收
+ * 闭环： 沟通，执行，反馈
+ * 复盘： 事前，事中，事后（审视控制点）
+ * 计算机： 输入设备，操作系统，输出设备
+ *
+ * 处理过程：
+ * 存储关联，存储映射，绑定关系，绑定数据
+ *
+ * @see NetworkClient#poll【4】
+ *
+ * 代码分层：
+ * - 业务层：KafkaProducer，Sender
+ * - 工具层：NetworkClient
+ * - 网络层：Selector
  *
  * IO线程：
  * @see Sender#run(long)【3】
@@ -162,6 +202,10 @@ import java.util.concurrent.atomic.AtomicReference;
  *              @see Selector#send
  *                  @see KafkaChannel#setSend
  *      @see NetworkClient#poll【4】
+ *
+ * 元数据更新全流程：09-03 17 分钟导航的那个是怎么弄的，最后几分钟很重要
+ * 不用讲网络，也能把更新流程讲完。说明分层思维的重要性。
+ *
  *
  */
 public class KafkaProducer<K, V> implements Producer<K, V> {
