@@ -276,13 +276,16 @@ public class Selector implements Selectable {
         if (timeout < 0)
             throw new IllegalArgumentException("timeout should be >= 0");
 
+        // 数据重置
         clear();
 
+        // 有连接、数据要处理，超时时间重置
         if (hasStagedReceives() || !immediatelyConnectedKeys.isEmpty())
             timeout = 0;
 
         /* check ready keys */
         long startSelect = time.nanoseconds();
+        // select 方法执行
         int readyKeys = select(timeout);
         long endSelect = time.nanoseconds();
         this.sensors.selectTime.record(endSelect - startSelect, time.milliseconds());
@@ -346,6 +349,7 @@ public class Selector implements Selectable {
 
                 /* if channel is ready write to any sockets that have space in their buffer and for which we have data */
                 if (channel.ready() && key.isWritable()) {
+                    // 之前 channel 绑定的 Send
                     Send send = channel.write();
                     if (send != null) {
                         this.completedSends.add(send);

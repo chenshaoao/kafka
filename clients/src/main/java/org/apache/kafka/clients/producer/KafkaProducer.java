@@ -1,16 +1,9 @@
 
 package org.apache.kafka.clients.producer;
 
-import org.apache.kafka.clients.ClientUtils;
-import org.apache.kafka.clients.Metadata;
-import org.apache.kafka.clients.NetworkClient;
+import org.apache.kafka.clients.*;
 import org.apache.kafka.clients.producer.internals.*;
-import org.apache.kafka.common.Cluster;
-import org.apache.kafka.common.KafkaException;
-import org.apache.kafka.common.Metric;
-import org.apache.kafka.common.MetricName;
-import org.apache.kafka.common.PartitionInfo;
-import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.*;
 import org.apache.kafka.common.config.ConfigException;
 import org.apache.kafka.common.errors.ApiException;
 import org.apache.kafka.common.errors.InterruptException;
@@ -24,9 +17,7 @@ import org.apache.kafka.common.metrics.MetricConfig;
 import org.apache.kafka.common.metrics.Metrics;
 import org.apache.kafka.common.metrics.MetricsReporter;
 import org.apache.kafka.common.metrics.Sensor;
-import org.apache.kafka.common.network.ChannelBuilder;
-import org.apache.kafka.common.network.KafkaChannel;
-import org.apache.kafka.common.network.Selector;
+import org.apache.kafka.common.network.*;
 import org.apache.kafka.common.record.CompressionType;
 import org.apache.kafka.common.record.Record;
 import org.apache.kafka.common.record.Records;
@@ -37,8 +28,11 @@ import org.apache.kafka.common.utils.SystemTime;
 import org.apache.kafka.common.utils.Time;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import sun.nio.ch.SocketChannelImpl;
 
 import java.net.InetSocketAddress;
+import java.nio.channels.SelectableChannel;
+import java.nio.channels.SelectionKey;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -207,11 +201,111 @@ import java.util.concurrent.atomic.AtomicReference;
  *          @see NetworkClient#doSend
  *              @see Selector#send
  *                  @see KafkaChannel#setSend
- *      @see NetworkClient#poll【4】
+ *      @see NetworkClient#poll【4】 （细化）请求和响应。元数据和消息数据。
  *
  * 元数据更新全流程：09-03 17 分钟导航的那个是怎么弄的，最后几分钟很重要，19 分钟核心。
  * 不用讲网络，也能把更新流程讲完。说明分层思维的重要性。
  *
+ *
+ * Metadata 等待请求：（行为暂存）（这个也是多线程处理模板）
+ * @see KafkaProducer#doSend
+ *      @see KafkaProducer#waitOnMetadata
+ *          @see Metadata#awaitUpdate(int, long)
+ *
+ * Metadata 封装请求：（消息处理过程中，判断是否需要发送元数据更新请求）
+ * @see Sender#run(long)
+ *      @see NetworkClient#poll
+ *          @see NetworkClient.DefaultMetadataUpdater#maybeUpdate(long)
+ *              @see NetworkClient.DefaultMetadataUpdater#maybeUpdate(long, Node)
+ *                  @see NetworkClient.DefaultMetadataUpdater#request （请求体是相同的）
+ *              @see NetworkClient#doSend(ClientRequest, long) （暂存，绑定channel）
+ *                  @see InFlightRequests#add(ClientRequest)
+ *                  @see Selector#send(Send)
+ *
+ * Metadata 处理响应：(唤醒等待）
+ * @see Sender#run(long)
+ *      @see NetworkClient#poll
+ *           @see Selector#poll(long) 发送请求
+ *           @see NetworkClient#handleCompletedReceives
+ *              @see NetworkClient#parseResponse 解析响应体
+ *                  @see NetworkClient#correlate 关联请求和响应（TODO 如何1对1对上的）
+ *              @see NetworkClient.DefaultMetadataUpdater#maybeHandleCompletedReceive 响应处理
+ *                  @see NetworkClient.DefaultMetadataUpdater#handleResponse
+ *                      @see Metadata#update(Cluster, long) 更新集群信息，唤醒等待线程
+ *
+ * 差异是消息放 response 里面，循环回调
+ * 内存分配的讲解
+ * selector io 层，请求和响应没有写，单独写
+ * NetworkClient#poll
+ * Selector#poll 分开讲
+ * 请求序列化，响应序列化
+ * 重试、超时
+ * 请求和响应对应
+ *
+ * 暂存专题，行为暂存，数据暂存。（线程挂起、内存append）（使用到的数据结构：Metadata，RecordAccumulator）
+ * 回调专题，行为回调，数据回调。（FutureRecordMetadata）
+ *
+ * 消息发送-等待请求：（数据暂存）
+ * @see KafkaProducer#doSend
+ *      @see RecordAccumulator#append （⭐️这块开专题讲）
+ *          @see RecordAccumulator#tryAppend
+ *          @see BufferPool#allocate(int, long) （⭐️这块开专题讲）
+ *
+ * 消息发送-封装请求
+ * @see Sender#run(long)
+ *      @see RecordAccumulator#ready
+ *      @see RecordAccumulator#drain
+ *      @see Sender#createProduceRequests
+ *          @see Sender#produceRequest （这里设置了 callback 的逻辑）
+ *      @see NetworkClient#send
+ *          @see NetworkClient#doSend(ClientRequest, long) （暂存，绑定channel）
+ *              @see InFlightRequests#add(ClientRequest)
+ *              @see Selector#send(Send)
+ *
+ * 消息发送-处理响应
+ * @see Sender#run(long)
+ *      @see NetworkClient#poll
+ *           @see Selector#poll(long) 发送请求
+ *           @see NetworkClient#handleCompletedReceives
+ *              @see NetworkClient#parseResponse 解析响应体
+ *                  @see NetworkClient#correlate 关联请求和响应（TODO 如何1对1对上的）
+ *              @see responses.add(ClientResponse) 添加响应
+ *           @see RequestCompletionHandler#onComplete(ClientResponse) （callback 回调）
+ *              @see Sender#handleProduceResponse
+ *                  @see Sender#completeBatch （⭐️这块开专题讲）（移除已经接收响应的请求）（4个数据结构）
+ *
+ *
+ * private final Map<String, KafkaChannel> channels;
+ * private final List<Send> completedSends;
+ * private final List<NetworkReceive> completedReceives;
+ *
+ * 专题：Selector#poll(long)，发送请求
+ * @see Selector#poll(long)
+ *      @see Selector#select(long)
+ *      @see Selector#pollSelectionKeys
+ *      // 处理连接
+ *      // 处理读
+ *      // 处理写
+ *
+ *
+ *
+ *
+ *
+ * 连接状态维护：
+ * 建立连接
+ * @see Sender#run(long)
+ *      @see NetworkClient#ready(Node, long)
+ *           @see ClusterConnectionStates#canConnect(java.lang.String, long)
+ *           @see NetworkClient#initiateConnect(Node, long)
+ *               @see Selector#connect(java.lang.String, java.net.InetSocketAddress, int, int)
+ *                   @see SocketChannelImpl#connect(java.net.SocketAddress)
+ *                   @see SelectableChannel#register(java.nio.channels.Selector, int)
+ *                   @see PlaintextChannelBuilder#buildChannel(java.lang.String, java.nio.channels.SelectionKey, int)
+ *                   @see SelectionKey#attach(java.lang.Object)
+ *                   @see immediatelyConnectedKeys.add(key) 如果连接就将 key 加入，poll 的时候立即处理
+ *
+ * 连接超时
+ * 断开连接
  *
  */
 public class KafkaProducer<K, V> implements Producer<K, V> {

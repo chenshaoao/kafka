@@ -128,6 +128,7 @@ public final class Metadata {
     /**
      * Request an update of the current cluster metadata info, return the current version before the update
      */
+    // topic 异常时，请求更新
     public synchronized int requestUpdate() {
         this.needUpdate = true;
         return this.version;
@@ -208,6 +209,7 @@ public final class Metadata {
      * Updates the cluster metadata. If topic expiry is enabled, expiry time
      * is set for topics if required and expired topics are removed from the metadata.
      */
+    // 初始化和响应回调的时候调用
     public synchronized void update(Cluster cluster, long now) {
 
         /**

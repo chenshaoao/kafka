@@ -270,14 +270,19 @@ public class NetworkClient implements KafkaClient {
         // 处理已完成的操作
         long updatedNow = this.time.milliseconds();
         List<ClientResponse> responses = new ArrayList<>();
+        // 处理请求
         handleCompletedSends(responses, updatedNow);
+        // 处理响应
         // 元数据更新场景：3. 处理响应，响应里面就有我们需要的元数据。处理已经完成接收的任务。
         handleCompletedReceives(responses, updatedNow);
+        // 处理连接
         handleDisconnections(responses, updatedNow);
+        // 处理连接：更新连接状态
         handleConnections();
+        // 处理超时
         handleTimedOutRequests(responses, updatedNow);
 
-        // 执行回调
+        // 处理响应：执行回调
         // TODO response 和 request 是如何绑定的
         for (ClientResponse response : responses) {
             if (response.request().hasCallback()) {
@@ -454,8 +459,9 @@ public class NetworkClient implements KafkaClient {
             String source = receive.source();
             ClientRequest req = inFlightRequests.completeNext(source);
             Struct body = parseResponse(receive.payload(), req.request().header());
-            // 元数据信息响应处理
+            // 元数据响应处理
             if (!metadataUpdater.maybeHandleCompletedReceive(req, now, body))
+                // 消息响应处理
                 responses.add(new ClientResponse(req, now, false, body));
         }
     }
