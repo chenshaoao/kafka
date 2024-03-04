@@ -314,18 +314,15 @@ public class Selector implements Selectable {
             iterator.remove();
             KafkaChannel channel = channel(key);
 
-            // register all per-connection metrics at once
-            sensors.maybeRegisterConnectionMetrics(channel.id());
             if (idleExpiryManager != null)
                 idleExpiryManager.update(channel.id(), currentTimeNanos);
 
             try {
 
-                /* complete any connections that have finished their handshake (either normally or immediately) */
+                // 三次握手结束后的处理（正常结束，或者，调用时就结束）
                 if (isImmediatelyConnected || key.isConnectable()) {
                     if (channel.finishConnect()) {
                         this.connected.add(channel.id());
-                        this.sensors.connectionCreated.record();
                         SocketChannel socketChannel = (SocketChannel) key.channel();
                         log.debug("Created socket with SO_RCVBUF = {}, SO_SNDBUF = {}, SO_TIMEOUT = {} to node {}",
                                 socketChannel.socket().getReceiveBufferSize(),

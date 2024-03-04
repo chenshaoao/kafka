@@ -251,6 +251,8 @@ import java.util.concurrent.atomic.AtomicReference;
  *          @see RecordAccumulator#tryAppend
  *          @see BufferPool#allocate(int, long) （⭐️这块开专题讲）
  *
+ *
+ *
  * 消息发送-封装请求
  * @see Sender#run(long)
  *      @see RecordAccumulator#ready
@@ -279,15 +281,13 @@ import java.util.concurrent.atomic.AtomicReference;
  * private final List<Send> completedSends;
  * private final List<NetworkReceive> completedReceives;
  *
- * 专题：Selector#poll(long)，发送请求
+ * 专题：发送请求
  * @see Selector#poll(long)
  *      @see Selector#select(long)
  *      @see Selector#pollSelectionKeys
  *      // 处理连接
  *      // 处理读
  *      // 处理写
- *
- *
  *
  *
  *
@@ -564,7 +564,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                 this.sender.wakeup();   // 业务线程 唤醒 IO线程。
             }
             // 步骤八：返回事件引用
-            return result.future;
+            return result.future;   // TODO 一个集群多个 producer，消息没有满足批次大小的时候，返回相通的 future吗？
         } catch (ApiException e) {
             if (callback != null)
                 callback.onCompletion(null, e);
