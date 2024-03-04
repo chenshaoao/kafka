@@ -211,7 +211,7 @@ public final class Metadata {
     public synchronized void update(Cluster cluster, long now) {
 
         /**
-         * 初始化和响应的时候都会调用这个方法
+         * 初始化和处理元数据响应的时候都会调用这个方法
          */
 
         Objects.requireNonNull(cluster, "cluster should not be null");
@@ -224,7 +224,8 @@ public final class Metadata {
         // Metadata 创建的时候，默认值为 true
         if (topicExpiryEnabled) {
             // Handle expiry of topics from the metadata refresh set.
-            // 构造器的时候，topic 还没有设置，发送的时候设置 topic。
+            // 第一次：业务线程，初始化，构造器的时候，topic 还没有设置，发送的时候设置 topic。
+            // 第二次：io 线程到这里，topic 已经有值了，这里能正常执行，元数据更新完后，唤醒业务线程的 producer.send 方法。（更新元数据的时候在等待）
             for (Iterator<Map.Entry<String, Long>> it = topics.entrySet().iterator(); it.hasNext(); ) {
                 Map.Entry<String, Long> entry = it.next();
                 long expireMs = entry.getValue();

@@ -209,7 +209,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *                  @see KafkaChannel#setSend
  *      @see NetworkClient#poll【4】
  *
- * 元数据更新全流程：09-03 17 分钟导航的那个是怎么弄的，最后几分钟很重要
+ * 元数据更新全流程：09-03 17 分钟导航的那个是怎么弄的，最后几分钟很重要，19 分钟核心。
  * 不用讲网络，也能把更新流程讲完。说明分层思维的重要性。
  *
  *
@@ -498,7 +498,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             // we notify interceptor about all exceptions, since onSend is called before anything else in this method
             if (this.interceptors != null)
                 this.interceptors.onSendError(record, tp, e);
-            throw e;
+            throw e;s
         }
     }
 

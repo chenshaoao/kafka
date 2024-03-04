@@ -256,10 +256,10 @@ public class NetworkClient implements KafkaClient {
     @Override
     public List<ClientResponse> poll(long timeout, long now) {
 
-        // 元数据更新场景：1. 初始化请求，返回超时时间。请求绑定存储到channel。
+        // 元数据更新场景：1. 封装请求，请求存储到channel。返回超时时间。
         long metadataTimeout = metadataUpdater.maybeUpdate(now);
         try {
-            // 元数据更新场景：2. 发送请求
+            // 元数据更新场景：2. 发送请求，发送网络请求（网络层）
             // 三个超时时间，谁小取谁。
             // 如果为0，就马上轮训，否则就在 select 上阻塞超时时间。
             this.selector.poll(Utils.min(timeout, metadataTimeout, requestTimeoutMs));
@@ -271,7 +271,7 @@ public class NetworkClient implements KafkaClient {
         long updatedNow = this.time.milliseconds();
         List<ClientResponse> responses = new ArrayList<>();
         handleCompletedSends(responses, updatedNow);
-        // 元数据更新场景：3. 处理响应
+        // 元数据更新场景：3. 处理响应，响应里面就有我们需要的元数据。处理已经完成接收的任务。
         handleCompletedReceives(responses, updatedNow);
         handleDisconnections(responses, updatedNow);
         handleConnections();
@@ -454,6 +454,7 @@ public class NetworkClient implements KafkaClient {
             String source = receive.source();
             ClientRequest req = inFlightRequests.completeNext(source);
             Struct body = parseResponse(receive.payload(), req.request().header());
+            // 元数据信息响应处理
             if (!metadataUpdater.maybeHandleCompletedReceive(req, now, body))
                 responses.add(new ClientResponse(req, now, false, body));
         }
@@ -556,6 +557,7 @@ public class NetworkClient implements KafkaClient {
                 // Beware that the behavior of this method and the computation of timeouts for poll() are
                 // highly dependent on the behavior of leastLoadedNode.
                 Node node = leastLoadedNode(now);
+                // 封装请求
                 maybeUpdate(now, node);
             }
 
@@ -585,6 +587,7 @@ public class NetworkClient implements KafkaClient {
         @Override
         public boolean maybeHandleCompletedReceive(ClientRequest req, long now, Struct body) {
             short apiKey = req.request().header().apiKey();
+            // 是元数据响应，才处理
             if (apiKey == ApiKeys.METADATA.id && req.isInitiatedByNetworkClient()) {
                 handleResponse(req.request().header(), body, now);
                 return true;
@@ -599,8 +602,9 @@ public class NetworkClient implements KafkaClient {
 
         private void handleResponse(RequestHeader header, Struct body, long now) {
             this.metadataFetchInProgress = false;
+            // 对二进制数据结构进行解析
             MetadataResponse response = new MetadataResponse(body);
-            // 获取集群信息
+            // 响应中获取集群信息
             Cluster cluster = response.cluster();
             // check if any topics metadata failed to get updated
             Map<String, Errors> errors = response.errors();
@@ -610,6 +614,7 @@ public class NetworkClient implements KafkaClient {
             // don't update the cluster if there are no valid nodes...the topic we want may still be in the process of being
             // created which means we will get errors and no nodes until it exists
             if (cluster.nodes().size() > 0) {
+                // notify 唤醒send 时wait 元数据的业务线程，同时会更新元数据版本
                 this.metadata.update(cluster, now);
             } else {
                 log.trace("Ignoring empty metadata response with correlation id {}.", header.correlationId());
@@ -637,15 +642,18 @@ public class NetworkClient implements KafkaClient {
             }
             String nodeConnectionId = node.idString();
 
+            // 网络连接是否已经建立，网络层处理
             if (canSendRequest(nodeConnectionId)) {
                 this.metadataFetchInProgress = true;
                 MetadataRequest metadataRequest;
                 if (metadata.needMetadataForAllTopics())
                     metadataRequest = MetadataRequest.allTopics();
                 else
+                    // producer 实例关心的对应topic 列表
                     metadataRequest = new MetadataRequest(new ArrayList<>(metadata.topics()));
                 ClientRequest clientRequest = request(now, nodeConnectionId, metadataRequest);
                 log.debug("Sending metadata request {} to node {}", metadataRequest, node.id());
+                // 存储请求，网络层处理
                 doSend(clientRequest, now);
             } else if (connectionStates.canConnect(nodeConnectionId, now)) {
                 // we don't have a connection to this node right now, make one
