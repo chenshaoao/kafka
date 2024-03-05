@@ -241,6 +241,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * 请求序列化，响应序列化
  * 重试、超时
  * 请求和响应对应
+ * 按层级看代码，不用每层都深入
  *
  * 暂存专题，行为暂存，数据暂存。（线程挂起、内存append）（使用到的数据结构：Metadata，RecordAccumulator）
  * 回调专题，行为回调，数据回调。（FutureRecordMetadata）
@@ -459,9 +460,9 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
 
             // 步骤七：初始化网络组件
             ChannelBuilder channelBuilder = ClientUtils.createChannelBuilder(config.values());
-            NetworkClient client = new NetworkClient(
+            NetworkClient client = new NetworkClient( // TODO 不是单例，多个集群要维护状态（一直new 的问题？）
                     new Selector(config.getLong(ProducerConfig.CONNECTIONS_MAX_IDLE_MS_CONFIG), this.metrics, time, "producer", channelBuilder),
-                    this.metadata,
+                    this.metadata, // TODO url
                     clientId,
                     config.getInt(ProducerConfig.MAX_IN_FLIGHT_REQUESTS_PER_CONNECTION),
                     config.getLong(ProducerConfig.RECONNECT_BACKOFF_MS_CONFIG),

@@ -273,35 +273,38 @@ public class Selector implements Selectable {
      */
     @Override
     public void poll(long timeout) throws IOException {
-        if (timeout < 0)
+        if (timeout < 0) {
             throw new IllegalArgumentException("timeout should be >= 0");
+        }
 
         // 数据重置
         clear();
 
         // 有连接、数据要处理，超时时间重置
-        if (hasStagedReceives() || !immediatelyConnectedKeys.isEmpty())
+        if (hasStagedReceives() || !immediatelyConnectedKeys.isEmpty()) {
             timeout = 0;
+        }
 
-        /* check ready keys */
         long startSelect = time.nanoseconds();
-        // select 方法执行
+        // select 方法执行：检查准备好的 key
         int readyKeys = select(timeout);
         long endSelect = time.nanoseconds();
         this.sensors.selectTime.record(endSelect - startSelect, time.milliseconds());
 
+        // 处理连接
         if (readyKeys > 0 || !immediatelyConnectedKeys.isEmpty()) {
+            // TODO 为什么正常连接和理解的连接的连接要分开处理？
             pollSelectionKeys(this.nioSelector.selectedKeys(), false, endSelect);
             pollSelectionKeys(immediatelyConnectedKeys, true, endSelect);
         }
 
+        // stagedReceives 放入 completedReceives
         addToCompletedReceives();
 
         long endIo = time.nanoseconds();
         this.sensors.ioTime.record(endIo - endSelect, time.milliseconds());
 
-        // we use the time at the end of select to ensure that we don't close any connections that
-        // have just been processed in pollSelectionKeys
+        // 关闭闲置的连接
         maybeCloseOldestConnection(endSelect);
     }
 
@@ -314,47 +317,45 @@ public class Selector implements Selectable {
             iterator.remove();
             KafkaChannel channel = channel(key);
 
-            if (idleExpiryManager != null)
+            if (idleExpiryManager != null) {
                 idleExpiryManager.update(channel.id(), currentTimeNanos);
+            }
 
             try {
-
-                // 三次握手结束后的处理（正常结束，或者，调用时就结束）
-                if (isImmediatelyConnected || key.isConnectable()) {
+                // 处理连接：写入 List<String> connected
+                if (isImmediatelyConnected || key.isConnectable()) { // 三次握手结束后的处理（正常结束，或者，调用时就结束）
                     if (channel.finishConnect()) {
                         this.connected.add(channel.id());
+                        // socket 核心属性: SO_RCVBUF=ReceiveBufferSize;SO_SNDBUF=SendBufferSize;SO_TIMEOUT=SoTimeout;channel.id;
                         SocketChannel socketChannel = (SocketChannel) key.channel();
-                        log.debug("Created socket with SO_RCVBUF = {}, SO_SNDBUF = {}, SO_TIMEOUT = {} to node {}",
-                                socketChannel.socket().getReceiveBufferSize(),
-                                socketChannel.socket().getSendBufferSize(),
-                                socketChannel.socket().getSoTimeout(),
-                                channel.id());
-                    } else
+                    } else {
                         continue;
+                    }
                 }
 
-                /* if channel is not ready finish prepare */
-                if (channel.isConnected() && !channel.ready())
+                // 已连接未握手
+                if (channel.isConnected() && !channel.ready()) {
                     channel.prepare();
+                }
 
-                /* if channel is ready read from any connections that have readable data */
+                // 处理读：写入 Map<KafkaChannel, Deque<NetworkReceive>> stagedReceives
                 if (channel.ready() && key.isReadable() && !hasStagedReceive(channel)) {
                     NetworkReceive networkReceive;
-                    while ((networkReceive = channel.read()) != null)
+                    while ((networkReceive = channel.read()) != null) {
                         addToStagedReceives(channel, networkReceive);
+                    }
                 }
 
-                /* if channel is ready write to any sockets that have space in their buffer and for which we have data */
+                // 处理写：写入对方缓冲区
                 if (channel.ready() && key.isWritable()) {
                     // 之前 channel 绑定的 Send
                     Send send = channel.write();
                     if (send != null) {
                         this.completedSends.add(send);
-                        this.sensors.recordBytesSent(channel.id(), send.size());
                     }
                 }
 
-                /* cancel any defunct sockets */
+                // 处理连接：关闭失效的连接，写入 List<String> disconnected
                 if (!key.isValid()) {
                     close(channel);
                     this.disconnected.add(channel.id());
@@ -362,10 +363,11 @@ public class Selector implements Selectable {
 
             } catch (Exception e) {
                 String desc = channel.socketDescription();
-                if (e instanceof IOException)
+                if (e instanceof IOException) {
                     log.debug("Connection with {} disconnected", desc, e);
-                else
+                } else {
                     log.warn("Unexpected error from {}; closing connection", desc, e);
+                }
                 close(channel);
                 this.disconnected.add(channel.id());
             }
@@ -425,16 +427,17 @@ public class Selector implements Selectable {
     }
 
     private void maybeCloseOldestConnection(long currentTimeNanos) {
-        if (idleExpiryManager == null)
+        if (idleExpiryManager == null) {
             return;
+        }
 
         Map.Entry<String, Long> expiredConnection = idleExpiryManager.pollExpiredConnection(currentTimeNanos);
         if (expiredConnection != null) {
             String connectionId = expiredConnection.getKey();
 
-            if (log.isTraceEnabled())
-                log.trace("About to close the idle connection from {} due to being idle for {} millis",
-                        connectionId, (currentTimeNanos - expiredConnection.getValue()) / 1000 / 1000);
+            if (log.isTraceEnabled()) {
+                log.trace("About to close the idle connection from {} due to being idle for {} millis", connectionId, (currentTimeNanos - expiredConnection.getValue()) / 1000 / 1000);
+            }
 
             disconnected.add(connectionId);
             close(connectionId);
@@ -491,7 +494,6 @@ public class Selector implements Selectable {
         }
         this.stagedReceives.remove(channel);
         this.channels.remove(channel.id());
-        this.sensors.connectionClosed.record();
 
         if (idleExpiryManager != null)
             idleExpiryManager.remove(channel.id());

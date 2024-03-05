@@ -12,6 +12,7 @@
  */
 package org.apache.kafka.clients;
 
+import org.apache.kafka.clients.producer.internals.Sender;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.Node;
 import org.apache.kafka.common.network.NetworkReceive;
@@ -270,12 +271,29 @@ public class NetworkClient implements KafkaClient {
         // 处理已完成的操作
         long updatedNow = this.time.milliseconds();
         List<ClientResponse> responses = new ArrayList<>();
-        // 处理请求
+
+        /**
+         * 因为 io 线程是单线程，没有并发问题，所有使用 ArrayDeque 数据结构 inFlightRequests
+         * 不需要响应的先处理头节点；需要响应的先处理尾节点。（所以要使用双端队列）
+         * io 线程统一操作 inFlightRequests.add() 方法，看哪里使用了
+         * TODO 为什么？ack=0 的是顺序消（受制于服务器处理顺序），正常响应的是倒序消（受制于服务器处理顺序），需要看服务端源码了。
+         */
+
+        // 处理请求：不需要响应的请求处理。ClientRequest.expectResponse = false 通过这个属性找赋值的地方
+        /**
+         * @see Sender#produceRequest acks = 0 的不需要响应（源码讲解思路：前后呼应）
+         */
+        // return inFlightRequests.requestQueue(node).pollFirst();    ???弹出头 （不需要响应的先处理头节点）
         handleCompletedSends(responses, updatedNow);
         // 处理响应
         // 元数据更新场景：3. 处理响应，响应里面就有我们需要的元数据。处理已经完成接收的任务。
+        // return inFlightRequests.requestQueue(node).pollLast();    ???弹出尾，时间最久的先处理（需要响应的先处理尾节点）
         handleCompletedReceives(responses, updatedNow);
-        // 处理连接
+        // 处理失效连接
+        /**
+         * @see org.apache.kafka.common.network.Selector#pollSelectionKeys(java.lang.Iterable, boolean, long)
+         * if (!key.isValid()) key 无效，连接也失效
+         */
         handleDisconnections(responses, updatedNow);
         // 处理连接：更新连接状态
         handleConnections();
@@ -283,7 +301,6 @@ public class NetworkClient implements KafkaClient {
         handleTimedOutRequests(responses, updatedNow);
 
         // 处理响应：执行回调
-        // TODO response 和 request 是如何绑定的
         for (ClientResponse response : responses) {
             if (response.request().hasCallback()) {
                 try {
@@ -387,10 +404,11 @@ public class NetworkClient implements KafkaClient {
     public static Struct parseResponse(ByteBuffer responseBuffer, RequestHeader requestHeader) {
         ResponseHeader responseHeader = ResponseHeader.parse(responseBuffer);
         // Always expect the response version id to be the same as the request version id
-        short apiKey = requestHeader.apiKey();
+        short apiKey = requestHeader.apiKey();  // run 创建请求对象的时候初始化的
         short apiVer = requestHeader.apiVersion();
         Struct responseBody = ProtoUtils.responseSchema(apiKey, apiVer).read(responseBuffer);
-        correlate(requestHeader, responseHeader);
+        // 校验递增ID，值不会超吗？ TODO
+        correlate(requestHeader, responseHeader); // correlationId ID 递增的，响应处理是有序的
         return responseBody;
     }
 
@@ -405,8 +423,9 @@ public class NetworkClient implements KafkaClient {
         connectionStates.disconnected(nodeId, now);
         for (ClientRequest request : this.inFlightRequests.clearAll(nodeId)) {
             log.trace("Cancelled request {} due to node {} being disconnected", request, nodeId);
-            if (!metadataUpdater.maybeHandleDisconnection(request))
+            if (!metadataUpdater.maybeHandleDisconnection(request)) {
                 responses.add(new ClientResponse(request, now, true, null));
+            }
         }
     }
 
@@ -427,8 +446,9 @@ public class NetworkClient implements KafkaClient {
         }
 
         // we disconnected, so we should probably refresh our metadata
-        if (nodeIds.size() > 0)
+        if (nodeIds.size() > 0) {
             metadataUpdater.requestUpdate();
+        }
     }
 
     /**
@@ -460,9 +480,10 @@ public class NetworkClient implements KafkaClient {
             ClientRequest req = inFlightRequests.completeNext(source);
             Struct body = parseResponse(receive.payload(), req.request().header());
             // 元数据响应处理
-            if (!metadataUpdater.maybeHandleCompletedReceive(req, now, body))
-                // 消息响应处理
+            if (!metadataUpdater.maybeHandleCompletedReceive(req, now, body)) {
+                // 正常消息响应处理
                 responses.add(new ClientResponse(req, now, false, body));
+            }
         }
     }
 
@@ -478,8 +499,9 @@ public class NetworkClient implements KafkaClient {
             processDisconnection(responses, node, now);
         }
         // we got a disconnect so we should probably refresh our metadata and see if that broker is dead
-        if (this.selector.disconnected().size() > 0)
+        if (this.selector.disconnected().size() > 0) {
             metadataUpdater.requestUpdate();
+        }
     }
 
     /**
