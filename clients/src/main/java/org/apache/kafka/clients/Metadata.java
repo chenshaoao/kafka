@@ -156,7 +156,8 @@ public final class Metadata {
         long begin = System.currentTimeMillis();                // 重试逻辑：初始化开始时间（累计）
         long remainingWaitMs = maxWaitMs;                       // 重试逻辑：初始化剩余时间（余量）
         // 判断版本，如果版本不对，继续等待（不用if，用while，唤醒后条件不一定满足）
-        while (this.version <= lastVersion) {
+        // lastVersion 当前的（不变的）； this.version 实时的（变化的）。
+        while (this.version <= lastVersion) {  // 终止条件：this.version <= lastVersion
             // 剩余等待时间不为0
             if (remainingWaitMs != 0)                           // 重试逻辑：判断剩余时间（判断余量）
                 /**
@@ -164,9 +165,9 @@ public final class Metadata {
                  * @see NetworkClient#poll
                  * @see Metadata#update IO线程更新完成后会唤醒等待的业务线程
                  */
-                wait(remainingWaitMs);                          // 重试逻辑：使用剩余时间（使用余量）（参与业务逻辑）
+                wait(remainingWaitMs);                          // 重试逻辑：使用剩余时间（使用余量）（参与业务逻辑）（余量用于业务参数）
             // 执行到这，要么被唤醒了，要么超时了。
-            long elapsed = System.currentTimeMillis() - begin;  // 重试逻辑：计算使用时间（更新累计）
+            long elapsed = System.currentTimeMillis() - begin;  // 重试逻辑：计算使用时间（更新累计）（累计用于超时判断，结束的耗时）
             // 如果消耗时间大于最大等待时间，报超时异常
             if (elapsed >= maxWaitMs)
                 // 异常处理：底层处理异常上抛，核心流程统一处理异常
@@ -263,8 +264,8 @@ public final class Metadata {
             clusterResourceListeners.onUpdate(cluster.clusterResource());
         }
 
-        // 发送消息时，等待元数据更新完成，awaitUpdate
-        // 唤醒所有等待线程
+        // 发送消息时，业务线程等待元数据更新完成，awaitUpdate
+        // IO线程，唤醒所有等待业务线程
         notifyAll();
         log.debug("Updated cluster metadata version {} to {}", this.version, this.cluster);
     }

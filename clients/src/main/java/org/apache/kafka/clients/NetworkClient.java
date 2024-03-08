@@ -12,6 +12,7 @@
  */
 package org.apache.kafka.clients;
 
+import org.apache.kafka.clients.producer.internals.RecordBatch;
 import org.apache.kafka.clients.producer.internals.Sender;
 import org.apache.kafka.common.Cluster;
 import org.apache.kafka.common.Node;
@@ -60,6 +61,7 @@ public class NetworkClient implements KafkaClient {
     /* the state of each node's connection */
     private final ClusterConnectionStates connectionStates;
 
+    // 等待响应的请求对象集合（有些请求不需要响应）
     /* the set of requests currently being sent or awaiting a response */
     private final InFlightRequests inFlightRequests;
 
@@ -241,7 +243,9 @@ public class NetworkClient implements KafkaClient {
 
     private void doSend(ClientRequest request, long now) {
         request.setSendTimeMs(now);
+        // TODO 响应找请求的时候用，队列，按照主机分组
         this.inFlightRequests.add(request);
+        // NIO 发送请求数据的时候用的
         selector.send(request.request());
     }
 
@@ -284,10 +288,14 @@ public class NetworkClient implements KafkaClient {
          * @see Sender#produceRequest acks = 0 的不需要响应（源码讲解思路：前后呼应）
          */
         // return inFlightRequests.requestQueue(node).pollFirst();    ???弹出头 （不需要响应的先处理头节点）
-        handleCompletedSends(responses, updatedNow);
+        // 单线程是前提，request 放入后，这里一定执行，handleCompletedSends 在 handleCompletedReceives 前
+        // 为什么会想出设计的解读：客户端自己能判断不需要响应的，自己知道的，自己处理掉了。（发起请求的时候，知道哪些是不需要响应，放到头部）
+        // 就是需要满足有些请求不需要响应，所以用双端队列的头来存储，不需要响应的请求。
+        handleCompletedSends(responses, updatedNow); // 请求和响应是一比一的，这里是 for 循环请求，下面是for 循环响应。
         // 处理响应
         // 元数据更新场景：3. 处理响应，响应里面就有我们需要的元数据。处理已经完成接收的任务。
         // return inFlightRequests.requestQueue(node).pollLast();    ???弹出尾，时间最久的先处理（需要响应的先处理尾节点）
+        // （TODO 响应是有顺序的 TCP 的原理也是这样的，服务端如何保证响应的顺序）
         handleCompletedReceives(responses, updatedNow);
         // 处理失效连接
         /**
@@ -295,16 +303,20 @@ public class NetworkClient implements KafkaClient {
          * if (!key.isValid()) key 无效，连接也失效
          */
         handleDisconnections(responses, updatedNow);
-        // 处理连接：更新连接状态
+        // 处理连接：连接成功后，更新连接状态（读写的前提）
         handleConnections();
-        // 处理超时
+        // 处理超时：TODO 要有一个数据结构记录请求当时的时间
         handleTimedOutRequests(responses, updatedNow);
 
         // 处理响应：执行回调
+        /**
+         * 这个不是： @see RecordBatch#tryAppend 这个是业务回调，不是这里执行的。业务的存在客户端缓冲区的批次里。
+         * @see Sender#produceRequest 这里生成的request 是存在 inFlightRequests 里的。callback 没有暂存数据，他的参数都是通过onComplete方法传递过来的。
+         */
         for (ClientResponse response : responses) {
             if (response.request().hasCallback()) {
                 try {
-                    response.request().callback().onComplete(response);
+                    response.request().callback().onComplete(response); // 执行这个方法的线程，就是IO线程
                 } catch (Exception e) {
                     log.error("Uncaught error in request completion:", e);
                 }
@@ -458,11 +470,13 @@ public class NetworkClient implements KafkaClient {
      * @param now The current time
      */
     private void handleCompletedSends(List<ClientResponse> responses, long now) {
-        // if no response is expected then when the send is completed, return it
+        // if no response is expected then when the send is completed, return it.
+        // selector 返回 Send，Send 里有主机信息，从 inFlightRequests 获取最新的 request，关联当前 Response。
         for (Send send : this.selector.completedSends()) {
             ClientRequest request = this.inFlightRequests.lastSent(send.destination());
             if (!request.expectResponse()) {
                 this.inFlightRequests.completeLastSent(send.destination());
+                // 不需要返回值，但是需要回调
                 responses.add(new ClientResponse(request, now, false, null));
             }
         }

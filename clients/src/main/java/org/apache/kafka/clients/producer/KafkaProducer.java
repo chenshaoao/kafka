@@ -228,10 +228,13 @@ import java.util.concurrent.atomic.AtomicReference;
  *           @see Selector#poll(long) 发送请求
  *           @see NetworkClient#handleCompletedReceives
  *              @see NetworkClient#parseResponse 解析响应体
- *                  @see NetworkClient#correlate 关联请求和响应（TODO 如何1对1对上的）
+ *                  @see NetworkClient#correlate 关联请求和响应
  *              @see NetworkClient.DefaultMetadataUpdater#maybeHandleCompletedReceive 响应处理
  *                  @see NetworkClient.DefaultMetadataUpdater#handleResponse
  *                      @see Metadata#update(Cluster, long) 更新集群信息，唤醒等待线程
+ *
+ * 单线程专题：
+ * 1. （元数据没有其他线程执行更新，只有IO线程执行更新）
  *
  * 差异是消息放 response 里面，循环回调
  * 内存分配的讲解
@@ -274,6 +277,8 @@ import java.util.concurrent.atomic.AtomicReference;
  *                  @see NetworkClient#correlate 关联请求和响应（TODO 如何1对1对上的）
  *              @see responses.add(ClientResponse) 添加响应
  *           @see RequestCompletionHandler#onComplete(ClientResponse) （callback 回调）
+ *              // @see RecordBatch#tryAppend 这里是业务回调的初始化
+ *              // @see Sender#produceRequest(long, int, short, int, java.util.List) 这里是io线程消息发送回调的初始化
  *              @see Sender#handleProduceResponse
  *                  @see Sender#completeBatch （⭐️这块开专题讲）（移除已经接收响应的请求）（4个数据结构）
  *
@@ -307,6 +312,13 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * 连接超时
  * 断开连接
+ *
+ * 拆包粘包：
+ * @see KafkaChannel#read
+ *
+ *
+ *
+ * java 内存模型，决定了，内存是公共存储。多线程通过内存交互的。
  *
  */
 public class KafkaProducer<K, V> implements Producer<K, V> {
@@ -564,6 +576,9 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
                  */
                 this.sender.wakeup();   // 业务线程 唤醒 IO线程。
             }
+            // TODO future.get() （同步） 没有调用，就是异步发送，多线程交互的核心还是统一的数据存储，callback 不是方法，而是对象里的方法，把对象存到了客户端缓冲区里。
+            // TODO 统一的数据存储是异步回调的前提。分布式设计中总会存在统一处理的地方（单点，分发器）。
+            // 回调的对象，存在了客户端缓冲区里。
             // 步骤八：返回事件引用
             return result.future;   // TODO 一个集群多个 producer，消息没有满足批次大小的时候，返回相通的 future吗？
         } catch (ApiException e) {
@@ -639,7 +654,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
         long remainingWaitMs = maxWaitMs;
         long elapsed;
         do {
-            // 更新 Metadata.needUpdate = true; IO线程异步更新。
+            // 更新 Metadata.needUpdate = true; IO单线程异步更新。
             // KafkaProducer 初始化的时候，version+1 了，这里直接返回当前值。
             int version = metadata.requestUpdate();
             // 唤醒IO线程，处理请求
@@ -650,15 +665,15 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             } catch (TimeoutException ex) {
                 throw new TimeoutException("Failed to update metadata after " + maxWaitMs + " ms.");
             }
-            cluster = metadata.fetch();
-            elapsed = time.milliseconds() - begin;
+            cluster = metadata.fetch(); // TODO 唤醒后，会获取一下最新的信息
+            elapsed = time.milliseconds() - begin; // TODO 唤醒后，更新耗时
             if (elapsed >= maxWaitMs)
                 throw new TimeoutException("Failed to update metadata after " + maxWaitMs + " ms.");
             if (cluster.unauthorizedTopics().contains(topic))
                 throw new TopicAuthorizationException(topic);
             remainingWaitMs = maxWaitMs - elapsed; // 更新重试剩余时间
-            partitionsCount = cluster.partitionCountForTopic(topic);
-        } while (partitionsCount == null);
+            partitionsCount = cluster.partitionCountForTopic(topic);    // TODO 核心点，集群信息更新后，当前topic 的分区信息没有获取，还是要继续更新。
+        } while (partitionsCount == null);  // TODO 唤醒后，验证条件是否满足
 
         // 正常执行完成。
         // 如果超时，前面 while 循环里已经抛异常了。

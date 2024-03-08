@@ -128,12 +128,21 @@ public class KafkaChannel {
     public NetworkReceive read() throws IOException {
         NetworkReceive result = null;
 
+        // 没有处理完，receive 暂存在 KafkaChannel
+        // 等待下次读取
         if (receive == null) {
             receive = new NetworkReceive(maxReceiveSize, id);
         }
 
+        // 单次读取
         receive(receive);
+        // 一个响应读取完成，size 和 buffer 分别读完。
+        //粘包，消息头和消息体完整，截断。
+        //拆包，消息头和消息体不完整，继续读取。
         if (receive.complete()) {
+            // 完整消息是粘包处理，不完整消息是拆包处理
+            // KafkaChannel 里是针对 NetworkReceive 的粘包和拆包逻辑
+            // NetworkReceive 里是针对 ByteBuffer 的粘包和拆包逻辑
             receive.payload().rewind();
             result = receive;
             receive = null;

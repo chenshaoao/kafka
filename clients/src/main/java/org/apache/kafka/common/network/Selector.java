@@ -82,7 +82,9 @@ public class Selector implements Selectable {
 
     private final java.nio.channels.Selector nioSelector;
     private final Map<String, KafkaChannel> channels;
+    // 完成的请求
     private final List<Send> completedSends;
+    // 完成的响应
     private final List<NetworkReceive> completedReceives;
     private final Map<KafkaChannel, Deque<NetworkReceive>> stagedReceives;
     private final Set<SelectionKey> immediatelyConnectedKeys;
@@ -321,6 +323,10 @@ public class Selector implements Selectable {
                 idleExpiryManager.update(channel.id(), currentTimeNanos);
             }
 
+            // TODO 能用公共数据结构的前提是单线程
+            // channel 处理完成后，放到统一的数据结构，不是直接返回。所以一个方法里面能做三件事情。也是异步的原因。
+            // TODO key 的事件是select 方法里初始化的
+
             try {
                 // 处理连接：写入 List<String> connected
                 if (isImmediatelyConnected || key.isConnectable()) { // 三次握手结束后的处理（正常结束，或者，调用时就结束）
@@ -341,10 +347,15 @@ public class Selector implements Selectable {
                 // 处理读：写入 Map<KafkaChannel, Deque<NetworkReceive>> stagedReceives
                 if (channel.ready() && key.isReadable() && !hasStagedReceive(channel)) {
                     NetworkReceive networkReceive;
+                    /**
+                     * networkReceive=null,本次
+                     */
                     while ((networkReceive = channel.read()) != null) {
                         addToStagedReceives(channel, networkReceive);
                     }
                 }
+
+
 
                 // 处理写：写入对方缓冲区
                 if (channel.ready() && key.isWritable()) {

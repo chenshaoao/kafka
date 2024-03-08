@@ -185,13 +185,16 @@ public class Sender implements Runnable {
 
         // 获取集群（缓存）metadata.fetch() 这个方法的命名和不好
         Cluster cluster = metadata.fetch();
+        // TODO 专题： 消息发到哪个主机的逻辑是什么? 是根据主机找消息，不是根据消息找主机。
         // 返回有数据的主题分区列表
         RecordAccumulator.ReadyCheckResult result = this.accumulator.ready(cluster, now);
 
         // 如果存在主题分区没有 leader 节点，更新 Metadata。
+        // TODO unknownLeaderTopics 全流程
         if (!result.unknownLeaderTopics.isEmpty()) {
-            for (String topic : result.unknownLeaderTopics)
+            for (String topic : result.unknownLeaderTopics) {
                 this.metadata.add(topic);
+            }
             this.metadata.requestUpdate();
         }
 
@@ -232,8 +235,9 @@ public class Sender implements Runnable {
             pollTimeout = 0;
         }
         // 设置超时时间；放入 inFlightRequests；请求绑定存储到 channel。
-        for (ClientRequest request : requests)
+        for (ClientRequest request : requests) {
             client.send(request, now);
+        }
 
         // if some partitions are already ready to be sent, the select time would be 0;
         // otherwise if some partition already has some data accumulated but not ready yet, the select time will be the time difference between now and its linger expiry time;
@@ -263,6 +267,7 @@ public class Sender implements Runnable {
     /**
      * Handle a produce response
      */
+    // TODO 这里拉通了业务的回调
     private void handleProduceResponse(ClientResponse response, Map<TopicPartition, RecordBatch> batches, long now) {
         int correlationId = response.request().request().header().correlationId();
         if (response.wasDisconnected()) {
@@ -372,6 +377,10 @@ public class Sender implements Runnable {
         RequestSend send = new RequestSend(Integer.toString(destination),
                                            this.client.nextRequestHeader(ApiKeys.PRODUCE),
                                            request.toStruct());
+        // 通过接口，创建匿名类的对象。对象引用赋值给接口（多态）。
+        // 回调的时候，拉取的是jvm里，方法的指令，没有对象的参数。
+        // 如果对象创建的时候有参数，说明不能是接口的匿名列，而是要有属性的对象。
+        // 不用单独定义实现类，简便的写法，和 lambda 表达式类似
         RequestCompletionHandler callback = new RequestCompletionHandler() {
             public void onComplete(ClientResponse response) {
                 handleProduceResponse(response, recordsByPartition, time.milliseconds());
