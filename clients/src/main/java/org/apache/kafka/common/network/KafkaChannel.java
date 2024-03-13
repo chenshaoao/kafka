@@ -127,14 +127,17 @@ public class KafkaChannel {
 
     public NetworkReceive read() throws IOException {
         NetworkReceive result = null;
-
         // 没有处理完，receive 暂存在 KafkaChannel
         // 等待下次读取
         if (receive == null) {
             receive = new NetworkReceive(maxReceiveSize, id);
         }
 
-        // 单次读取
+        // 单次读取。
+        // ByteBuffer 是抽象类。有具体实现的。
+        // 内容填充，填充逻辑交给 NetworkReceive 对象。而不是将 NetworkReceive 下传。
+        // 没有填充完就暂存着，不回收
+        // NetworkReceive 构造的时候，只是分配了 size 用于填充。buffer 是动态确认的，延迟分配。
         receive(receive);
         // 一个响应读取完成，size 和 buffer 分别读完。
         //粘包，消息头和消息体完整，截断。
@@ -143,7 +146,7 @@ public class KafkaChannel {
             // 完整消息是粘包处理，不完整消息是拆包处理
             // KafkaChannel 里是针对 NetworkReceive 的粘包和拆包逻辑
             // NetworkReceive 里是针对 ByteBuffer 的粘包和拆包逻辑
-            receive.payload().rewind();
+            receive.payload().rewind(); // ⭐️ 重置 buffer 读下标
             result = receive;
             receive = null;
         }

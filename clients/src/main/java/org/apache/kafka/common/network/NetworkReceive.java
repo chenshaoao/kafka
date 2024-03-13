@@ -82,13 +82,13 @@ public class NetworkReceive implements Receive {
         // 处理 size 缓冲区，size 缓冲区的内存大小是固定的
         if (size.hasRemaining()) {
             // 这里的 read 是阻塞循环读，数据写入 size ByteBuffer
-            int bytesRead = channel.read(size);
+            int bytesRead = channel.read(size); // ⭐ ByteBuffer 传入下层，循环读完下层 buffer，写入 ByteBuffer
             if (bytesRead < 0) {
                 throw new EOFException();
             }
             read += bytesRead;  // 累计读取大小
             if (!size.hasRemaining()) { // size 读完了
-                size.rewind(); // 重置读下标
+                size.rewind(); // ⭐️ 重置 size 读下标
                 // 解析 size 值，ByteBuffer 转 int
                 int receiveSize = size.getInt();
                 // 校验 size 值
@@ -100,7 +100,7 @@ public class NetworkReceive implements Receive {
         }
         if (buffer != null) {
             // 这里的 read 是阻塞循环读，数据写入 buffer ByteBuffer
-            int bytesRead = channel.read(buffer);
+            int bytesRead = channel.read(buffer); // ⭐ ByteBuffer 传入下层，循环读完下层 buffer，写入 ByteBuffer
             // 读满，是粘包处理，没读满是拆包处理
             if (bytesRead < 0)
                 throw new EOFException();
