@@ -345,6 +345,7 @@ public class Selector implements Selectable {
                 }
 
                 // 处理读：写入 Map<KafkaChannel, Deque<NetworkReceive>> stagedReceives
+                // TODO !hasStagedReceive(channel) 这一句的含义是精华。
                 if (channel.ready() && key.isReadable() && !hasStagedReceive(channel)) {
                     NetworkReceive networkReceive;
                     /**
