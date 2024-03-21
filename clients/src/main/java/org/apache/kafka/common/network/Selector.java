@@ -345,11 +345,15 @@ public class Selector implements Selectable {
                 }
 
                 // 处理读：写入 Map<KafkaChannel, Deque<NetworkReceive>> stagedReceives
-                // TODO !hasStagedReceive(channel) 这一句的含义是精华。
+                // TODO !hasStagedReceive(channel) 这一句的含义是精华。等着被取走后再执行下一次读
                 if (channel.ready() && key.isReadable() && !hasStagedReceive(channel)) {
                     NetworkReceive networkReceive;
                     /**
                      * networkReceive=null,本次
+                     *
+                     * 读满，读不满场景分析
+                     *
+                     * TODO 是否需要读下一次，所有这里是粘包处理的核心。
                      */
                     while ((networkReceive = channel.read()) != null) {
                         addToStagedReceives(channel, networkReceive);

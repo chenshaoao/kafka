@@ -80,14 +80,19 @@ public class NetworkReceive implements Receive {
         int read = 0;
         // NetworkReceive = size + buffer
         // 处理 size 缓冲区，size 缓冲区的内存大小是固定的
-        if (size.hasRemaining()) {
+        if (size.hasRemaining()) { // 是否填满（多少没有读完）
             // 这里的 read 是阻塞循环读，数据写入 size ByteBuffer
+            // 填充
             int bytesRead = channel.read(size); // ⭐ ByteBuffer 传入下层，循环读完下层 buffer，写入 ByteBuffer
             if (bytesRead < 0) {
                 throw new EOFException();
             }
+
+            // 不满足如何让下一次继续。
+            // 如果不了解暂存逻辑，无法理解，下一次如何接着读。 ！！！！
+
             read += bytesRead;  // 累计读取大小
-            if (!size.hasRemaining()) { // size 读完了
+            if (!size.hasRemaining()) { // size 填充满
                 size.rewind(); // ⭐️ 重置 size 读下标
                 // 解析 size 值，ByteBuffer 转 int
                 int receiveSize = size.getInt();
@@ -98,6 +103,9 @@ public class NetworkReceive implements Receive {
                 this.buffer = ByteBuffer.allocate(receiveSize);
             }
         }
+        // size 是否满是 应用层关心的，用于下一段处理逻辑（下一层告诉你了）， buffer 满不满是下层告诉你的。
+        // buffer 是否读满，没有后续逻辑了，所以应用层不用关心是否读满。（指定大小读）
+        // 是否完整读满是在 上层判断的。 receive.complete()
         if (buffer != null) {
             // 这里的 read 是阻塞循环读，数据写入 buffer ByteBuffer
             int bytesRead = channel.read(buffer); // ⭐ ByteBuffer 传入下层，循环读完下层 buffer，写入 ByteBuffer

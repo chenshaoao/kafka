@@ -133,6 +133,9 @@ public class KafkaChannel {
             receive = new NetworkReceive(maxReceiveSize, id);
         }
 
+        // 先讲粘包
+        // 再讲拆包，拆包 size 和 buffer 两个场景分别讲
+
         // 单次读取。
         // ByteBuffer 是抽象类。有具体实现的。
         // 内容填充，填充逻辑交给 NetworkReceive 对象。而不是将 NetworkReceive 下传。
@@ -142,11 +145,12 @@ public class KafkaChannel {
         // 一个响应读取完成，size 和 buffer 分别读完。
         //粘包，消息头和消息体完整，截断。
         //拆包，消息头和消息体不完整，继续读取。
+        // TODO 处理粘包逻辑，粘包逻辑是控制层处理的
         if (receive.complete()) {
             // 完整消息是粘包处理，不完整消息是拆包处理
             // KafkaChannel 里是针对 NetworkReceive 的粘包和拆包逻辑
             // NetworkReceive 里是针对 ByteBuffer 的粘包和拆包逻辑
-            receive.payload().rewind(); // ⭐️ 重置 buffer 读下标
+            receive.payload().rewind(); // ⭐️ 重置 buffer 读下标，重置暂存对象，用于上一次填充
             result = receive;
             receive = null;
         }
