@@ -608,7 +608,7 @@ public class KafkaProducer<K, V> implements Producer<K, V> {
             // we notify interceptor about all exceptions, since onSend is called before anything else in this method
             if (this.interceptors != null)
                 this.interceptors.onSendError(record, tp, e);
-            throw e;s
+            throw e;
         }
     }
 
