@@ -219,6 +219,7 @@ public class ConsumerNetworkClient implements Closeable {
         firePendingCompletedRequests();
 
         synchronized (this) {
+            // TODO 注册发送请求
             // send all the requests we can send now
             trySend(now);
 
@@ -232,9 +233,11 @@ public class ConsumerNetworkClient implements Closeable {
                 client.poll(Math.min(MAX_POLL_TIMEOUT_MS, timeout), now);
                 now = time.milliseconds();
             } else {
+                // TODO 执行发送
                 client.poll(0, now);
             }
 
+            // TODO 失效连接检查
             // handle any disconnects by failing the active requests. note that disconnects must
             // be checked immediately following poll since any subsequent call to client.ready()
             // will reset the disconnect status
@@ -244,10 +247,12 @@ public class ConsumerNetworkClient implements Closeable {
             // to be fired on the next call to poll()
             maybeTriggerWakeup();
 
+            // TODO 再次注册发送请求
             // try again to send requests since buffer space may have been
             // cleared or a connect finished in the poll
             trySend(now);
 
+            // TODO 处理超时请求
             // fail requests that couldn't be sent if they have expired
             failExpiredRequests(now);
         }

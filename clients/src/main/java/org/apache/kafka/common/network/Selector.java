@@ -176,7 +176,8 @@ public class Selector implements Selectable {
         socket.setTcpNoDelay(true);
         boolean connected;
         try {
-            connected = socketChannel.connect(address);
+            // 99% 第一次连不上，为什么，可以验证。
+            connected = socketChannel.connect(address); //
         } catch (UnresolvedAddressException e) {
             socketChannel.close();
             throw new IOException("Can't resolve address: " + address, e);
@@ -184,6 +185,7 @@ public class Selector implements Selectable {
             socketChannel.close();
             throw e;
         }
+        // 只是监听，没有去建立连接
         SelectionKey key = socketChannel.register(nioSelector, SelectionKey.OP_CONNECT);
         KafkaChannel channel = channelBuilder.buildChannel(id, key, maxReceiveSize);
         key.attach(channel);
@@ -193,7 +195,7 @@ public class Selector implements Selectable {
             // OP_CONNECT won't trigger for immediately connected channels
             log.debug("Immediately connected to node {}", channel.id());
             immediatelyConnectedKeys.add(key);
-            key.interestOps(0);
+            key.interestOps(0); // ？
         }
     }
 
@@ -287,24 +289,24 @@ public class Selector implements Selectable {
             timeout = 0;
         }
 
-        long startSelect = time.nanoseconds();
-        // select 方法执行：检查准备好的 key
+        // select 方法执行：检查准备好的 key（channel + 数据）
         int readyKeys = select(timeout);
         long endSelect = time.nanoseconds();
-        this.sensors.selectTime.record(endSelect - startSelect, time.milliseconds());
 
         // 处理连接
         if (readyKeys > 0 || !immediatelyConnectedKeys.isEmpty()) {
-            // TODO 为什么正常连接和理解的连接的连接要分开处理？
+            // TODO 为什么正常连接和立即的连接的连接要分开处理？
             pollSelectionKeys(this.nioSelector.selectedKeys(), false, endSelect);
             pollSelectionKeys(immediatelyConnectedKeys, true, endSelect);
         }
 
+        // channel 连接
+        // 数据
+        // 事件（接口）（给 selector）（事件带数据）
+
+
         // stagedReceives 放入 completedReceives
         addToCompletedReceives();
-
-        long endIo = time.nanoseconds();
-        this.sensors.ioTime.record(endIo - endSelect, time.milliseconds());
 
         // 关闭闲置的连接
         maybeCloseOldestConnection(endSelect);
@@ -330,6 +332,7 @@ public class Selector implements Selectable {
             try {
                 // 处理连接：写入 List<String> connected
                 if (isImmediatelyConnected || key.isConnectable()) { // 三次握手结束后的处理（正常结束，或者，调用时就结束）
+                    // TODO 连接建立完成后，read 事件马上建立，再也不删除。（场景：连接断开后，重新建立连接，要马上接收数据，不需要等有发送的消息ß）
                     if (channel.finishConnect()) {
                         this.connected.add(channel.id());
                         // socket 核心属性: SO_RCVBUF=ReceiveBufferSize;SO_SNDBUF=SendBufferSize;SO_TIMEOUT=SoTimeout;channel.id;
@@ -346,6 +349,8 @@ public class Selector implements Selectable {
 
                 // 处理读：写入 Map<KafkaChannel, Deque<NetworkReceive>> stagedReceives
                 // TODO !hasStagedReceive(channel) 这一句的含义是精华。等着被取走后再执行下一次读
+                // client read 事件是处理响应
+                // server read 事件是处理请求
                 if (channel.ready() && key.isReadable() && !hasStagedReceive(channel)) {
                     NetworkReceive networkReceive;
                     /**
@@ -360,7 +365,7 @@ public class Selector implements Selectable {
                     }
                 }
 
-
+                // 读是循环读，写是定点写。
 
                 // 处理写：写入对方缓冲区
                 if (channel.ready() && key.isWritable()) {
@@ -374,6 +379,7 @@ public class Selector implements Selectable {
                 // 处理连接：关闭失效的连接，写入 List<String> disconnected
                 if (!key.isValid()) {
                     close(channel);
+                    // 跨层交互
                     this.disconnected.add(channel.id());
                 }
 

@@ -75,7 +75,9 @@ class KafkaApis(val requestChannel: RequestChannel,
       trace("Handling request:%s from connection %s;securityProtocol:%s,principal:%s".
         format(request.requestDesc(true), request.connectionId, request.securityProtocol, request.session.principal))
       ApiKeys.forId(request.requestId) match {
+        // 生产者消息处理：入口
         case ApiKeys.PRODUCE => handleProducerRequest(request)
+        // 消费者消息处理：入口
         case ApiKeys.FETCH => handleFetchRequest(request)
         case ApiKeys.LIST_OFFSETS => handleOffsetRequest(request)
         case ApiKeys.METADATA => handleTopicMetadataRequest(request)
@@ -358,6 +360,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       case (topicPartition, _) => authorize(request.session, Write, new Resource(auth.Topic, topicPartition.topic))
     }
 
+    // 生产者消息处理：回调定义，执行完成后调用
     // the callback for sending a produce response
     def sendResponseCallback(responseStatus: Map[TopicPartition, PartitionResponse]) {
 
@@ -408,6 +411,7 @@ class KafkaApis(val requestChannel: RequestChannel,
             case version => throw new IllegalArgumentException(s"Version `$version` of ProduceRequest is not handled. Code must be updated.")
           }
 
+          // 生产者消息处理：响应
           requestChannel.sendResponse(new RequestChannel.Response(request, new ResponseSend(request.connectionId, respHeader, respBody)))
         }
       }
@@ -432,6 +436,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         case (topicPartition, buffer) => (topicPartition, new ByteBufferMessageSet(buffer))
       }
 
+      // 生产者消息处理：保存消息
       // call the replica manager to append messages to the replicas
       replicaManager.appendMessages(
         produceRequest.timeout.toLong,
@@ -468,6 +473,7 @@ class KafkaApis(val requestChannel: RequestChannel,
       (tp, FetchResponsePartitionData(Errors.TOPIC_AUTHORIZATION_FAILED.code, -1, MessageSet.Empty))
     }
 
+    // TODO 消费者消息处理：回调函数，结束后调用
     // the callback for sending a fetch response
     def sendResponseCallback(responsePartitionData: Seq[(TopicAndPartition, FetchResponsePartitionData)]) {
 
@@ -509,6 +515,7 @@ class KafkaApis(val requestChannel: RequestChannel,
         trace(s"Sending fetch response to client ${fetchRequest.clientId} of " +
           s"${convertedPartitionData.map { case (_, v) => v.messages.sizeInBytes }.sum} bytes")
         val response = FetchResponse(fetchRequest.correlationId, mergedPartitionData.toSeq, fetchRequest.versionId, delayTimeMs)
+        // TODO 消费者消息处理：响应处理
         requestChannel.sendResponse(new RequestChannel.Response(request, new FetchResponseSend(request.connectionId, response)))
       }
 
@@ -519,10 +526,11 @@ class KafkaApis(val requestChannel: RequestChannel,
         //We've already evaluated against the quota and are good to go. Just need to record it now.
         val responseSize = sizeOfThrottledPartitions(fetchRequest, mergedPartitionData, quotas.leader)
         quotas.leader.record(responseSize)
+        // TODO 消费者消息处理：响应处理
         fetchResponseCallback(0)
       } else {
-        val responseSize = FetchResponse.responseSize(FetchResponse.batchByTopic(mergedPartitionData),
-          fetchRequest.versionId)
+        val responseSize = FetchResponse.responseSize(FetchResponse.batchByTopic(mergedPartitionData), fetchRequest.versionId)
+        // TODO 消费者消息处理：响应处理
         quotas.fetch.recordAndMaybeThrottle(request.session.sanitizedUser, fetchRequest.clientId, responseSize, fetchResponseCallback)
       }
     }
@@ -530,6 +538,7 @@ class KafkaApis(val requestChannel: RequestChannel,
     if (authorizedRequestInfo.isEmpty)
       sendResponseCallback(Seq.empty)
     else {
+      // TODO 消费者消息处理：获取消息
       // call the replica manager to fetch messages from the local replica
       replicaManager.fetchMessages(
         fetchRequest.maxWait.toLong,

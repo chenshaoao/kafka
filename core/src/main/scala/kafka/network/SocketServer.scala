@@ -407,14 +407,20 @@ private[kafka] class Processor(val id: Int,
 
   override def run() {
     startupComplete()
+    // 一直死循环，处理连接、读、写
     while (isRunning) {
       try {
         // setup any new connections that have been queued up
+        // TODO 创建连接的时候，注册 read 事件 1.
         configureNewConnections()
         // register any new responses for writing
+        // 从 reqeustchannel 里面获取 response ，TODO 注册 write 事件 3.
         processNewResponses()
-        poll()
+        // response 数据，数据发送完成后， TODO 删除 write 事件 4.
+        poll() // 初始化 Completed的数据结构逻辑
+        // TODO 处理接收数据后，要删除 read 事件 2.
         processCompletedReceives()
+        // TODO 处理发送数据后，要注册 read 事件 5.
         processCompletedSends()
         processDisconnected()
       } catch {
@@ -483,6 +489,7 @@ private[kafka] class Processor(val id: Int,
     }
   }
 
+  // 客户端 request 反序列化，为服务端能识别的 request 对象
   private def processCompletedReceives() {
     selector.completedReceives.asScala.foreach { receive =>
       try {

@@ -245,7 +245,8 @@ public class NetworkClient implements KafkaClient {
         request.setSendTimeMs(now);
         // TODO 响应找请求的时候用，队列，按照主机分组
         this.inFlightRequests.add(request);
-        // NIO 发送请求数据的时候用的
+        // Kafka 发送请求数据的时候用的
+        // 暂存 + 监听写事件
         selector.send(request.request());
     }
 
@@ -287,6 +288,7 @@ public class NetworkClient implements KafkaClient {
         /**
          * @see Sender#produceRequest acks = 0 的不需要响应（源码讲解思路：前后呼应）
          */
+        // TODO 响应已经有结果了，连接的响应数据先处理。 这里开始是串行。 代码的顺序就是优先级的顺序。
         // return inFlightRequests.requestQueue(node).pollFirst();    ???弹出头 （不需要响应的先处理头节点）
         // 单线程是前提，request 放入后，这里一定执行，handleCompletedSends 在 handleCompletedReceives 前
         // 为什么会想出设计的解读：客户端自己能判断不需要响应的，自己知道的，自己处理掉了。（发起请求的时候，知道哪些是不需要响应，放到头部）
@@ -296,7 +298,7 @@ public class NetworkClient implements KafkaClient {
         // 元数据更新场景：3. 处理响应，响应里面就有我们需要的元数据。处理已经完成接收的任务。
         // return inFlightRequests.requestQueue(node).pollLast();    ???弹出尾，时间最久的先处理（需要响应的先处理尾节点）
         // （TODO 响应是有顺序的 TCP 的原理也是这样的，服务端如何保证响应的顺序）
-        handleCompletedReceives(responses, updatedNow);
+        handleCompletedReceives(responses, updatedNow); // TODO 可以单独开线程池
         // 处理失效连接
         /**
          * @see org.apache.kafka.common.network.Selector#pollSelectionKeys(java.lang.Iterable, boolean, long)
@@ -474,6 +476,7 @@ public class NetworkClient implements KafkaClient {
         // selector 返回 Send，Send 里有主机信息，从 inFlightRequests 获取最新的 request，关联当前 Response。
         for (Send send : this.selector.completedSends()) {
             ClientRequest request = this.inFlightRequests.lastSent(send.destination());
+            // TODO 不需要响应 ack 为 0
             if (!request.expectResponse()) {
                 this.inFlightRequests.completeLastSent(send.destination());
                 // 不需要返回值，但是需要回调

@@ -976,6 +976,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
             long start = time.milliseconds();
             long remaining = timeout;
             do {
+                // TODO 拉取数据
                 Map<TopicPartition, List<ConsumerRecord<K, V>>> records = pollOnce(remaining);
                 if (!records.isEmpty()) {
                     // before returning the fetched records, we can send off the next round of fetches
@@ -1017,17 +1018,20 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         if (!subscriptions.hasAllFetchPositions())
             updateFetchPositions(this.subscriptions.missingFetchPositions());
 
+        // TODO 数据准备完成后返回，开始的时候是空的
         // if data is available already, return it immediately
         Map<TopicPartition, List<ConsumerRecord<K, V>>> records = fetcher.fetchedRecords();
         if (!records.isEmpty())
             return records;
 
+        // TODO 暂存 fetch 请求，里面有响应的回调。【这个很重要】
         // send any new fetches (won't resend pending fetches)
         fetcher.sendFetches();
 
         long now = time.milliseconds();
         long pollTimeout = Math.min(coordinator.timeToNextPoll(now), timeout);
 
+        // TODO 发送请求
         client.poll(pollTimeout, now, new PollCondition() {
             @Override
             public boolean shouldBlock() {
@@ -1042,6 +1046,7 @@ public class KafkaConsumer<K, V> implements Consumer<K, V> {
         if (coordinator.needRejoin())
             return Collections.emptyMap();
 
+        // TODO 数据处理
         return fetcher.fetchedRecords();
     }
 

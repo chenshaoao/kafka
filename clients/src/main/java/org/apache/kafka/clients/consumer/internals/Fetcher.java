@@ -146,10 +146,13 @@ public class Fetcher<K, V> {
      * an in-flight fetch or pending fetch data.
      */
     public void sendFetches() {
+        // TODO 创建 fatch 请求
         for (Map.Entry<Node, FetchRequest> fetchEntry : createFetchRequests().entrySet()) {
             final FetchRequest request = fetchEntry.getValue();
             final Node fetchTarget = fetchEntry.getKey();
 
+            // TODO 发送 fatch 请求（暂存）
+            // TODO 什么时候执行回调的 ？？？
             client.send(fetchTarget, ApiKeys.FETCH, request)
                     .addListener(new RequestFutureListener<ClientResponse>() {
                         @Override
@@ -171,6 +174,7 @@ public class Fetcher<K, V> {
                                 TopicPartition partition = entry.getKey();
                                 long fetchOffset = request.fetchData().get(partition).offset;
                                 FetchResponse.PartitionData fetchData = entry.getValue();
+                                // TODO 回调后存储数据
                                 completedFetches.add(new CompletedFetch(partition, fetchOffset, fetchData, metricAggregator));
                             }
 
@@ -417,6 +421,7 @@ public class Fetcher<K, V> {
 
         while (recordsRemaining > 0) {
             if (nextInLineRecords == null || nextInLineRecords.isDrained()) {
+                // TODO 处理数据
                 CompletedFetch completedFetch = completedFetches.poll();
                 if (completedFetch == null)
                     break;
@@ -425,6 +430,7 @@ public class Fetcher<K, V> {
             } else {
                 TopicPartition partition = nextInLineRecords.partition;
 
+                // TODO 处理数据
                 List<ConsumerRecord<K, V>> records = drainRecords(nextInLineRecords, recordsRemaining);
                 if (!records.isEmpty()) {
                     List<ConsumerRecord<K, V>> currentRecords = drained.get(partition);
@@ -619,9 +625,11 @@ public class Fetcher<K, V> {
      * that have no existing requests in flight.
      */
     private Map<Node, FetchRequest> createFetchRequests() {
+        // TODO 更新元数据，和生产者类似，没有细看
         // create the fetch info
         Cluster cluster = metadata.fetch();
         Map<Node, LinkedHashMap<TopicPartition, FetchRequest.PartitionData>> fetchable = new LinkedHashMap<>();
+        // TODO 更新可拉取的分区
         for (TopicPartition partition : fetchablePartitions()) {
             Node node = cluster.leaderFor(partition);
             if (node == null) {
@@ -642,6 +650,7 @@ public class Fetcher<K, V> {
             }
         }
 
+        // TODO 创建 fetch 请求
         // create the fetches
         Map<Node, FetchRequest> requests = new HashMap<>();
         for (Map.Entry<Node, LinkedHashMap<TopicPartition, FetchRequest.PartitionData>> entry : fetchable.entrySet()) {

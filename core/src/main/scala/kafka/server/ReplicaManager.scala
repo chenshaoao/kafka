@@ -325,8 +325,10 @@ class ReplicaManager(val config: KafkaConfig,
                      messagesPerPartition: Map[TopicPartition, MessageSet],
                      responseCallback: Map[TopicPartition, PartitionResponse] => Unit) {
 
+    // 校验 ack 有效性
     if (isValidRequiredAcks(requiredAcks)) {
       val sTime = SystemTime.milliseconds
+      // 生产者消息处理：保存本地消息
       val localProduceResults = appendToLocalLog(internalTopicsAllowed, messagesPerPartition, requiredAcks)
       debug("Produce to local log in %d ms".format(SystemTime.milliseconds - sTime))
 
@@ -340,6 +342,7 @@ class ReplicaManager(val config: KafkaConfig,
       if (delayedRequestRequired(requiredAcks, messagesPerPartition, localProduceResults)) {
         // create delayed produce operation
         val produceMetadata = ProduceMetadata(requiredAcks, produceStatus)
+        // 生产者消息处理：延迟队列，执行回调 ack=-1
         val delayedProduce = new DelayedProduce(timeout, produceMetadata, this, responseCallback)
 
         // create a list of (topic, partition) pairs to use as keys for this delayed produce operation
@@ -353,6 +356,7 @@ class ReplicaManager(val config: KafkaConfig,
       } else {
         // we can respond immediately
         val produceResponseStatus = produceStatus.mapValues(status => status.responseStatus)
+        // 生产者消息处理：执行回调 ack=1
         responseCallback(produceResponseStatus)
       }
     } else {
@@ -363,6 +367,7 @@ class ReplicaManager(val config: KafkaConfig,
           topicAndPartition -> new PartitionResponse(Errors.INVALID_REQUIRED_ACKS.code,
             LogAppendInfo.UnknownLogAppendInfo.firstOffset, Message.NoTimestamp)
       }
+      // 生产者消息处理：执行回调 ack=0
       responseCallback(responseStatus)
     }
   }
@@ -465,6 +470,7 @@ class ReplicaManager(val config: KafkaConfig,
     val fetchOnlyFromLeader: Boolean = replicaId != Request.DebuggingConsumerId
     val fetchOnlyCommitted: Boolean = ! Request.isValidBrokerId(replicaId)
 
+    // 消费者消息处理：获取本地日志
     // read from local logs
     val logReadResults = readFromLocalLog(
       replicaId = replicaId,
@@ -494,6 +500,7 @@ class ReplicaManager(val config: KafkaConfig,
       val fetchPartitionData = logReadResults.map { case (tp, result) =>
         tp -> FetchResponsePartitionData(result.errorCode, result.hw, result.info.messageSet)
       }
+      // 消费者消息处理：回调
       responseCallback(fetchPartitionData)
     } else {
       // construct the fetch results from the read results
